@@ -1,0 +1,28 @@
+{
+  "projectId": "prj_south_phoenix_01",
+  "projectName": "South Phoenix Logistics Campus",
+  "siteId": "site_limit_42",
+  "siteName": "Baseline Development Parcel",
+  "location": "South Phoenix, AZ",
+  "countryCode": "US",
+  "timezone": "America/Phoenix",
+  "areaSqFt": 359376,
+  "areaAcres": 8.25,
+  "selectedProposal": "Warehouse Study — Baseline",
+  "selectedSiteLimit": "Site Limit 01",
+  "creditsRemaining": 1742430,
+  "geometry": {
+    "elementPath": "urn:adsk-forma:project/prj_south_phoenix_01/proposal/baseline/site-limit/site_limit_42",
+    "pointCount": 42,
+    "centroid": { "longitude": -112.0699, "latitude": 33.3857 },
+    "bounds": { "north": 33.3892, "east": -112.0651, "south": 33.3821, "west": -112.0746 },
+    "geojson": {
+      "type": "Feature",
+      "properties": { "id": "site_limit_42", "source": "Forma" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[-112.0746,33.3821],[-112.0651,33.3827],[-112.0655,33.3892],[-112.0739,33.3888],[-112.0746,33.3821]]]
+      }
+    }
+  }
+}

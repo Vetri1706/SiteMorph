@@ -1,0 +1,5 @@
+[
+  { "id": "candidate-a", "label": "A", "name": "Climate First", "externalDesignId": "forma_design_a", "orientationDegrees": 18, "orientationLabel": "18° NE", "analysisId": "analysis-a", "selected": false, "isImproved": false, "scores": { "climateFit": 91, "sun": 82, "wind": 88, "microclimate": 79, "energy": 84, "carbon": 76, "programFit": 89, "siteUtilization": 74, "overall": 84 } },
+  { "id": "candidate-b", "label": "B", "name": "Balanced", "externalDesignId": "forma_design_b", "orientationDegrees": 8, "orientationLabel": "8° NE", "analysisId": "analysis-b", "selected": false, "isImproved": false, "scores": { "climateFit": 86, "sun": 90, "wind": 78, "microclimate": 87, "energy": 85, "carbon": 82, "programFit": 94, "siteUtilization": 83, "overall": 84 } },
+  { "id": "candidate-c", "label": "C", "name": "Maximum Area", "externalDesignId": "forma_design_c", "orientationDegrees": 0, "orientationLabel": "0°", "analysisId": "analysis-c", "selected": false, "isImproved": false, "scores": { "climateFit": 72, "sun": 74, "wind": 81, "microclimate": 71, "energy": 77, "carbon": 69, "programFit": 90, "siteUtilization": 96, "overall": 79 } }
+]

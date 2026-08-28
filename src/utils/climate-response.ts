@@ -1,0 +1,159 @@
+import type { ClimateDNA, ClimateResponseResult } from "../types";
+
+export interface ScalarAnalysisGrid {
+  grid: Float32Array | Uint8Array;
+  mask?: Uint8Array;
+  width: number;
+  height: number;
+  x0: number;
+  y0: number;
+  resolution: number;
+  analysisId?: string;
+}
+
+export interface ClimateResponseInputs {
+  climate: ClimateDNA;
+  siteBoundary: Array<[number, number]>;
+  sun?: ScalarAnalysisGrid;
+  wind?: ScalarAnalysisGrid;
+}
+
+const FG_WEIGHT = 0.45;
+const SUN_WEIGHT = 0.35;
+const WIND_WEIGHT = 0.20;
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function pointInPolygon(point: [number, number], polygon: Array<[number, number]>): boolean {
+  let inside = false;
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index, index += 1) {
+    const [x, y] = polygon[index];
+    const [previousX, previousY] = polygon[previous];
+    if ((y > point[1]) !== (previousY > point[1])
+      && point[0] < ((previousX - x) * (point[1] - y)) / (previousY - y) + x) inside = !inside;
+  }
+  return inside;
+}
+
+function sampleGrid(source: ScalarAnalysisGrid, x: number, y: number): number | undefined {
+  const column = Math.floor((x - source.x0) / source.resolution);
+  const row = Math.floor((source.y0 - y) / source.resolution);
+  if (column < 0 || row < 0 || column >= source.width || row >= source.height) return undefined;
+  const index = row * source.width + column;
+  if (source.mask && source.mask[index] === 0) return undefined;
+  const value = Number(source.grid[index]);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+export function historicalHeatBurden(climate: ClimateDNA): number {
+  const temperature = clamp01((climate.thermal.meanCelsius - 25) / 20);
+  const persistence = clamp01((climate.thermal.meanPersistenceHours ?? climate.thermal.longestPersistenceHours) / 24);
+  const exceedance = clamp01(climate.thermal.hoursAboveThreshold / 24);
+  return 0.40 * temperature + 0.35 * persistence + 0.25 * exceedance;
+}
+
+export function buildClimateResponse({ climate, siteBoundary, sun, wind }: ClimateResponseInputs): ClimateResponseResult {
+  const target = sun ?? wind;
+  if (!target) throw new Error("A readable Forma Sun or Wind grid is required for the hybrid Climate Response.");
+  if (siteBoundary.length < 3) throw new Error("The Forma Site Limit boundary is required for the hybrid Climate Response.");
+
+  const output = new Float32Array(target.width * target.height);
+  const mask = new Uint8Array(output.length);
+  const baseline = historicalHeatBurden(climate);
+  let validCount = 0;
+  let sunCount = 0;
+  let windCount = 0;
+  let total = 0;
+  let maximum = 0;
+
+  for (let row = 0; row < target.height; row += 1) {
+    for (let column = 0; column < target.width; column += 1) {
+      const index = row * target.width + column;
+      if (target.mask && target.mask[index] === 0) continue;
+      const x = target.x0 + (column + 0.5) * target.resolution;
+      const y = target.y0 - (row + 0.5) * target.resolution;
+      if (!pointInPolygon([x, y], siteBoundary)) continue;
+
+      let weightedRisk = baseline * FG_WEIGHT;
+      let activeWeight = FG_WEIGHT;
+      const sunValue = sun ? sampleGrid(sun, x, y) : undefined;
+      if (sunValue !== undefined) {
+        weightedRisk += clamp01(sunValue / 12) * SUN_WEIGHT;
+        activeWeight += SUN_WEIGHT;
+        sunCount += 1;
+      }
+      const windValue = wind ? sampleGrid(wind, x, y) : undefined;
+      if (windValue !== undefined) {
+        // Forma Rapid Wind comfort values are 0–4, with lower values representing
+        // better pedestrian conditions. The factor is therefore already risk-oriented.
+        weightedRisk += clamp01(windValue / 4) * WIND_WEIGHT;
+        activeWeight += WIND_WEIGHT;
+        windCount += 1;
+      }
+      const score = Number(((weightedRisk / activeWeight) * 100).toFixed(2));
+      output[index] = score;
+      mask[index] = 1;
+      validCount += 1;
+      total += score;
+      maximum = Math.max(maximum, score);
+    }
+  }
+
+  if (!validCount) throw new Error("Forma analysis grids did not overlap the selected Site Limit.");
+  const coverage = (count: number) => Number(((count / validCount) * 100).toFixed(1));
+  const inputs: ClimateResponseResult["summary"]["inputs"] = [{
+    id: "fortyguard-history",
+    label: "FortyGuard hot-season historical burden",
+    source: "fortyguard",
+    configuredWeightPercent: FG_WEIGHT * 100,
+    resolutionMeters: 60,
+    coveragePercent: 100,
+  }];
+  if (sun) inputs.push({
+    id: "forma-sun",
+    label: "Forma native ground Sun exposure",
+    source: "forma",
+    configuredWeightPercent: SUN_WEIGHT * 100,
+    analysisId: sun.analysisId,
+    resolutionMeters: sun.resolution,
+    coveragePercent: coverage(sunCount),
+  });
+  if (wind) inputs.push({
+    id: "forma-wind",
+    label: "Forma Rapid Wind comfort",
+    source: "forma",
+    configuredWeightPercent: WIND_WEIGHT * 100,
+    analysisId: wind.analysisId,
+    resolutionMeters: wind.resolution,
+    coveragePercent: coverage(windCount),
+  });
+
+  const missing = [sun ? null : "Sun", wind ? null : "Wind"].filter((item): item is string => Boolean(item));
+  return {
+    grid: {
+      grid: output,
+      mask,
+      width: target.width,
+      height: target.height,
+      x0: target.x0,
+      y0: target.y0,
+      resolution: target.resolution,
+    },
+    summary: {
+      generatedAt: new Date().toISOString(),
+      status: missing.length ? "partial" : "complete",
+      label: "Forma-resolved Climate Response",
+      meanRiskScore: Number((total / validCount).toFixed(1)),
+      maximumRiskScore: Number(maximum.toFixed(1)),
+      resolutionMeters: target.resolution,
+      historicalBaselineScore: Number((baseline * 100).toFixed(1)),
+      inputs,
+      formula: "45% FortyGuard historical burden + 35% Forma ground Sun + 20% Forma Rapid Wind comfort; available inputs are renormalized per valid cell.",
+      note: missing.length
+        ? `${missing.join(" and ")} grid unavailable. The response is partial and does not claim the missing native analysis.`
+        : "All displayed spatial variation comes from Forma's geometry-responsive grids; FortyGuard contributes the parcel's historical baseline without fabricated sub-cell detail.",
+    },
+  };
+}
