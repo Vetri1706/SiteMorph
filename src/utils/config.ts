@@ -1,12 +1,14 @@
 export const isInsideForma = typeof window !== "undefined" && window !== window.parent;
+const isHostedSite = typeof window !== "undefined" && window.location.hostname.endsWith(".chatgpt.site");
 
 export const appConfig = {
   // The Forma SDK requires an embedded host bridge. Standalone localhost must
   // remain a safe preview even when an old .env file contains MOCK_MODE=false.
   mockMode: !isInsideForma,
   backendUrl: import.meta.env.VITE_SITEMORPH_BACKEND_URL ?? "/api",
-  optionalFortyGuardEvidence: import.meta.env.VITE_FORTYGUARD_OPTIONAL_EVIDENCE === "true",
-  paidFortyGuardAnalysis: import.meta.env.VITE_FORTYGUARD_PAID_ANALYSIS === "true",
+  hostedSite: isHostedSite,
+  optionalFortyGuardEvidence: !isHostedSite && import.meta.env.VITE_FORTYGUARD_OPTIONAL_EVIDENCE === "true",
+  paidFortyGuardAnalysis: isHostedSite || import.meta.env.VITE_FORTYGUARD_PAID_ANALYSIS === "true",
 } as const;
 
 export const delay = (milliseconds: number) =>

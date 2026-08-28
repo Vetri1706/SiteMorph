@@ -19,19 +19,20 @@ export function SiteTab() {
     ? new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric" }).format(new Date(site.creditsSavedAt))
     : undefined;
   const initialAnalysisEnabled = appConfig.paidFortyGuardAnalysis;
+  const firstRunReady = analysisCacheStatus === "missing" && initialAnalysisEnabled;
   const actionLabel = analysisStatus === "running"
     ? analysisCacheStatus === "checking" ? "Checking Saved Climate DNA" : "Running Initial Climate Analysis"
     : analysisStatus === "completed"
       ? "Open Climate DNA"
-      : analysisCacheStatus === "missing" && initialAnalysisEnabled
-        ? "Run First Full Climate Analysis"
+      : firstRunReady
+        ? "Run First Thermal Analysis · max 12"
         : initialAnalysisEnabled
-          ? "Analyze or Restore Climate DNA"
+          ? "Check Saved Climate DNA"
           : "Load Saved Climate DNA";
-  const actionDetail = analysisCacheStatus === "missing" && initialAnalysisEnabled
-    ? "First full run includes site imagery and will be saved for automatic no-credit reuse"
+  const actionDetail = firstRunReady
+    ? "Explicit approval required · core thermal only · saved for automatic no-credit reuse"
     : initialAnalysisEnabled
-      ? "Saved AOI checked first · new Site Limits include thermal, satellite and Street View evidence"
+      ? "Saved AOI is checked first · no new FortyGuard activity starts during this check"
       : analysisStatus === "completed"
         ? "Restored automatically · zero new FortyGuard submissions"
         : "Safe mode · checks the saved AOI result only";
@@ -57,7 +58,7 @@ export function SiteTab() {
         <div className="status-list">
           <div><span><ShieldCheck size={16} />Forma Connection</span><StatusPill label={connection.connected ? "Connected" : "Connecting"} tone={connection.connected ? "success" : "neutral"} /></div>
           <div><span><ScanLine size={16} />Site Geometry</span><StatusPill label={geometry ? "Ready" : "Missing"} tone={geometry ? "success" : "warning"} /></div>
-          <div><span><Database size={16} />FortyGuard</span><StatusPill label="Ready" tone="success" /></div>
+          <div><span><Database size={16} />FortyGuard</span><StatusPill label={appConfig.hostedSite ? "Hosted · capped" : "Ready"} tone="success" /></div>
         </div>
         <div className={`boundary-callout ${selectionStatus === "waiting" || selectionStatus === "resolving" ? "boundary-waiting" : ""}`}>
           <span className="boundary-icon"><BoxSelect size={19} /></span>
@@ -69,7 +70,18 @@ export function SiteTab() {
       <AnalysisTimeline />
 
       <div className="sticky-action">
-        <Button className="w-full" disabled={!geometry || analysisStatus === "running"} onClick={() => analysisStatus === "completed" ? setActiveTab("climate") : void analyzeSite(!initialAnalysisEnabled)}>
+        <Button className="w-full" disabled={!geometry || analysisStatus === "running"} onClick={() => {
+          if (analysisStatus === "completed") {
+            setActiveTab("climate");
+            return;
+          }
+          if (firstRunReady) {
+            const approved = window.confirm("Run the first hosted thermal analysis for this Site Limit? This may create up to 12 FortyGuard activities. Optional imagery remains deferred, and the completed result will be reused without new activities.");
+            if (approved) void analyzeSite(false);
+            return;
+          }
+          void analyzeSite(true);
+        }}>
           <Play size={15} fill="currentColor" />{actionLabel}
         </Button>
         <span>{actionDetail}</span>

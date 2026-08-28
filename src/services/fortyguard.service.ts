@@ -7,6 +7,29 @@ export interface FortyGuardServiceContract {
   getUsage(): Promise<FortyGuardUsage>;
 }
 
+export class FortyGuardServiceError extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "FortyGuardServiceError";
+  }
+}
+
+async function responseError(response: Response, fallback: string): Promise<FortyGuardServiceError> {
+  const raw = await response.text().catch(() => "");
+  let payload: { code?: string; error?: string } = {};
+  try { payload = raw ? JSON.parse(raw) as typeof payload : {}; } catch { /* The backend may have returned an asset-host 404. */ }
+  const routeMissing = response.status === 404 && !payload.error;
+  return new FortyGuardServiceError(
+    payload.error ?? (routeMissing ? "The hosted SiteMorph analysis backend is not connected. No FortyGuard request was started." : fallback),
+    payload.code ?? (routeMissing ? "BACKEND_ROUTE_MISSING" : "REQUEST_FAILED"),
+    response.status,
+  );
+}
+
 class FortyGuardService implements FortyGuardServiceContract {
   async getUsage(): Promise<FortyGuardUsage> {
     if (appConfig.mockMode) {
@@ -16,8 +39,7 @@ class FortyGuardService implements FortyGuardServiceContract {
     try {
       const response = await fetch(`${appConfig.backendUrl}/fortyguard/usage`);
       if (!response.ok) {
-        const payload = await response.json().catch(() => ({})) as { error?: string };
-        throw new Error(payload.error ?? "FortyGuard credit usage is unavailable");
+        throw await responseError(response, "FortyGuard credit usage is unavailable");
       }
       const usage = (await response.json()) as FortyGuardUsage;
       try { window.localStorage.setItem(storageKey, JSON.stringify(usage)); } catch { /* Storage is an optional fallback. */ }
@@ -42,8 +64,7 @@ class FortyGuardService implements FortyGuardServiceContract {
       body: JSON.stringify({ geometry: geometry.geojson, thresholdCelsius, siteTimezone, cacheOnly }),
     });
     if (!response.ok) {
-      const payload = await response.json().catch(() => ({})) as { error?: string };
-      throw new Error(payload.error ?? (response.status === 422 ? "Site Outside Supported Coverage" : "FortyGuard site analysis failed"));
+      throw await responseError(response, response.status === 422 ? "Site Outside Supported Coverage" : "FortyGuard site analysis failed");
     }
     return (await response.json()) as SiteAnalysisResponse;
   }

@@ -37,10 +37,14 @@ export function AnalysisTimeline() {
       {error && (
         <div className="error-block">
           <strong>{error}</strong>
-          <p>{error.includes("still running") ? "The paid activity IDs were saved. Check again to resume polling without submitting new activities." : "Check the saved result without starting another FortyGuard analysis."}</p>
+          <p>{error.includes("still running")
+            ? "The paid activity IDs were saved. Check again to resume polling without submitting new activities."
+            : error.includes("backend is not connected")
+              ? "Use the local Forma extension until its private hosted analysis route is deployed."
+              : "Check the saved result without starting another FortyGuard analysis."}</p>
           <div className="flex flex-wrap gap-2">
-            <Button variant="secondary" onClick={() => void retry()}><RotateCcw size={14} />Check saved result</Button>
-            <Button variant="ghost" onClick={() => setToast("Unavailable layer skipped")}>Skip layer<ChevronRight size={14} /></Button>
+            <Button variant="secondary" onClick={() => void retry()}><RotateCcw size={14} />{error.includes("backend is not connected") ? "Retry connection" : "Check saved result"}</Button>
+            {!error.includes("backend is not connected") && <Button variant="ghost" onClick={() => setToast("Unavailable layer skipped")}>Skip layer<ChevronRight size={14} /></Button>}
           </div>
         </div>
       )}

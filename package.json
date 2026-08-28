@@ -12,9 +12,9 @@
     "test:revit": "node --experimental-strip-types --test tests/revit-obj.test.ts",
     "test:cache": "node --experimental-strip-types --test tests/analysis-cache.test.ts",
     "test:hybrid": "node --experimental-strip-types --test tests/climate-response.test.ts",
-    "build": "vite build && node scripts/prepare-sites-build.mjs",
+    "build": "vite build && node scripts/prepare-sites-build.mjs && node scripts/build-sites-worker.mjs",
     "preview": "vite preview",
-    "test:sites": "node --test tests/sites-worker.test.mjs"
+    "test:sites": "node --test tests/sites-worker.test.mjs tests/sites-hosted-api.test.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",

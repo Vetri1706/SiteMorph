@@ -5,7 +5,7 @@ import { analysisService } from "../services/analysis.service";
 import { climateService } from "../services/climate.service";
 import { designService } from "../services/design.service";
 import { formaService, type FormaConnectionState } from "../services/forma.service";
-import { fortyGuardService } from "../services/fortyguard.service";
+import { fortyGuardService, FortyGuardServiceError } from "../services/fortyguard.service";
 import { formaOverlayService } from "../services/overlay.service";
 import { formaDesignService } from "../services/forma-design.service";
 import { formaClimateResponseService } from "../services/forma-climate-response.service";
@@ -62,7 +62,7 @@ const liveBrief: DesignBrief = {
 
 const createAnalysisSteps = (pointCount?: number): AnalysisStep[] => [
   { id: "geometry", label: "Site geometry extracted", detail: pointCount ? `${pointCount} Forma geometry points` : "Forma Site Limit", status: "pending" },
-  { id: "heatmap", label: appConfig.paidFortyGuardAnalysis ? "Climate evidence" : "Saved heat activities", detail: appConfig.mockMode ? "60 m resolution" : appConfig.paidFortyGuardAnalysis ? "Saved AOI first · new Site Limit: thermal + site imagery" : "Safe mode · resume saved activity IDs · zero new submissions", status: "pending" },
+  { id: "heatmap", label: appConfig.paidFortyGuardAnalysis ? "Climate evidence" : "Saved heat activities", detail: appConfig.mockMode ? "60 m resolution" : appConfig.paidFortyGuardAnalysis ? "Saved AOI first · new Site Limit: 12 core thermal activities maximum" : "Safe mode · resume saved activity IDs · zero new submissions", status: "pending" },
   { id: "persistence", label: "Persistent heat analysis", status: "pending" },
   { id: "exceedance", label: "Threshold exceedance analysis", detail: "35 °C threshold", status: "pending" },
   ...(!appConfig.mockMode ? [
@@ -387,14 +387,15 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Analysis failed";
-      const savedResultMissing = cacheOnly && message.includes("No complete saved analysis exists yet");
+      const errorCode = error instanceof FortyGuardServiceError ? error.code : "";
+      const savedResultMissing = cacheOnly && (errorCode === "SAVED_ANALYSIS_MISSING" || message.includes("No complete saved analysis exists yet"));
       set({
         analysisStatus: savedResultMissing ? "idle" : "failed",
         analysisCacheStatus: savedResultMissing ? "missing" : get().analysisCacheStatus,
         analysisError: savedResultMissing ? null : message,
         toast: savedResultMissing
           ? appConfig.paidFortyGuardAnalysis
-            ? "No complete enriched Climate DNA saved · ready for the first full FortyGuard analysis"
+            ? "No saved Climate DNA found · first thermal run requires explicit approval"
             : "No saved Climate DNA matches this Site Limit · initial analysis is disabled"
           : null,
       });
