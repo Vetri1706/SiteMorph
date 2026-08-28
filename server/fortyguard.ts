@@ -11,6 +11,7 @@ type AnalyticType = "tcm" | "persistence" | "exceedance" | "time_of_measure";
 
 interface FortyGuardConfig {
   apiKey?: string;
+  fallbackApiKeys?: string[];
   baseUrl: string;
   analysisDates: string[];
   granularity: 60 | 80 | 100;
@@ -19,6 +20,33 @@ interface FortyGuardConfig {
   maxNewActivities: number;
   includeOptionalEvidence: boolean;
   cacheVersion?: string;
+}
+
+const preferredApiKeyIndex = new WeakMap<FortyGuardConfig, number>();
+
+function configuredApiKeys(config: FortyGuardConfig): string[] {
+  return [config.apiKey, ...(config.fallbackApiKeys ?? [])]
+    .map((key) => key?.trim())
+    .filter((key, index, keys): key is string => Boolean(key) && keys.indexOf(key) === index);
+}
+
+function shouldRotateApiKey(status: number, message: string): boolean {
+  if (status === 401 || status === 402) return true;
+  // A 429 is a temporary request-rate signal unless the provider supplies a
+  // documented structured exhaustion code. Never fan a paid POST across keys
+  // based on free-form 429 text.
+  if (status !== 403) return false;
+  const credentialFailure = /(?:api[\s_-]*key|credential|token).*(?:invalid|expired|revoked|disabled|inactive|unauthorized)/i.test(message)
+    || /(?:invalid|expired|revoked|disabled|inactive|unauthorized).*(?:api[\s_-]*key|credential|token)/i.test(message);
+  const unavailableCredits = /(?:credit\s+balance|credits?).*(?:exhaust|deplet|insufficient|not\s+enough|no\s+remaining|none\s+remaining|zero|\b0\b|limit[^.]*?(?:reach|exceed))/i.test(message)
+    || /(?:exhaust|deplet|insufficient|not\s+enough|no\s+remaining|none\s+remaining|zero|\b0\b).*(?:credit\s+balance|credits?)/i.test(message);
+  return credentialFailure || unavailableCredits;
+}
+
+interface FortyGuardFetchOptions {
+  bodyForApiKey?: (apiKey: string) => BodyInit | null;
+  startKeyIndex?: number;
+  onApiKeySelected?: (keyIndex: number) => void;
 }
 
 interface AnalyzeBody {
@@ -389,6 +417,7 @@ interface PersistedActivityEntry {
   kind: CachedActivityKind;
   status: CachedActivityStatus;
   activityId: string;
+  credentialSlot?: number;
   savedAt: string;
   result?: FortyGuardResult | OptionalEvidenceResult;
   error?: string;
@@ -452,41 +481,63 @@ function optionalActivityKey(
   return activityCacheKey(geometry, path, body, config.cacheVersion);
 }
 
-async function fortyGuardFetch(config: FortyGuardConfig, path: string, init?: RequestInit): Promise<Record<string, unknown>> {
+async function fortyGuardFetch(
+  config: FortyGuardConfig,
+  path: string,
+  init?: RequestInit,
+  options: FortyGuardFetchOptions = {},
+): Promise<Record<string, unknown>> {
+  const apiKeys = configuredApiKeys(config);
+  if (!apiKeys.length) throw new HttpError(503, "FORTYGUARD_API_KEY is not configured on the SiteMorph backend");
   const isReadRequest = !init?.method || init.method === "GET";
   const attempts = isReadRequest ? 3 : 1;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    let response: Response;
-    try {
-      response = await fetch(`${config.baseUrl}${path}`, {
-        ...init,
-        signal: init?.signal ?? AbortSignal.timeout(30_000),
-        headers: { "Content-Type": "application/json", "api-key": config.apiKey ?? "", ...init?.headers },
-      });
-    } catch (error) {
-      if (attempt + 1 < attempts) {
+  const requestedKeyIndex = Number.isInteger(options.startKeyIndex) ? Number(options.startKeyIndex) : undefined;
+  const initialKeyIndex = Math.max(0, Math.min(requestedKeyIndex ?? preferredApiKeyIndex.get(config) ?? 0, apiKeys.length - 1));
+  for (let keyIndex = initialKeyIndex; keyIndex < apiKeys.length; keyIndex += 1) {
+    const apiKey = apiKeys[keyIndex];
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      let response: Response;
+      try {
+        response = await fetch(`${config.baseUrl}${path}`, {
+          ...init,
+          ...(options.bodyForApiKey ? { body: options.bodyForApiKey(apiKey) } : {}),
+          signal: init?.signal ?? AbortSignal.timeout(30_000),
+          headers: { "Content-Type": "application/json", "api-key": apiKey, ...init?.headers },
+        });
+      } catch (error) {
+        if (attempt + 1 < attempts) {
+          await wait(500 * (attempt + 1));
+          continue;
+        }
+        // A network failure can occur after a paid submission was accepted. Never
+        // try another key when the upstream outcome is ambiguous.
+        throw new HttpError(502, "FortyGuard network request failed; automatic resubmission is blocked");
+      }
+
+      const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+      if (response.ok) {
+        preferredApiKeyIndex.set(config, Math.max(preferredApiKeyIndex.get(config) ?? 0, keyIndex));
+        options.onApiKeySelected?.(keyIndex);
+        return payload;
+      }
+      const message = findDeepString(payload, ["message", "error", "detail", "description"])
+        ?? `FortyGuard request failed (${response.status})`;
+      if (shouldRotateApiKey(response.status, message) && keyIndex + 1 < apiKeys.length) break;
+      if (isReadRequest && (response.status === 429 || response.status >= 500) && attempt + 1 < attempts) {
         await wait(500 * (attempt + 1));
         continue;
       }
-      const cause = error && typeof error === "object" && "cause" in error
-        ? (error as { cause?: { code?: string; message?: string } }).cause
-        : undefined;
-      const detail = cause?.code ?? cause?.message ?? (error instanceof Error ? error.message : "connection error");
-      throw new HttpError(502, `FortyGuard network request failed (${detail})`);
+      if (response.status === 401) throw new HttpError(502, "FortyGuard rejected the configured server credentials");
+      if (response.status === 402 || shouldRotateApiKey(response.status, message)) {
+        throw new HttpError(502, "FortyGuard credits or credentials are unavailable for this analysis");
+      }
+      if (response.status === 403) throw new HttpError(502, "FortyGuard denied this analysis");
+      if (response.status === 429) throw new HttpError(429, "FortyGuard temporarily rate limited this analysis");
+      if (response.status >= 500) throw new HttpError(502, "FortyGuard service is temporarily unavailable");
+      throw new HttpError(response.status, "FortyGuard rejected this analysis request");
     }
-
-    const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
-    if (response.ok) return payload;
-    if (isReadRequest && (response.status === 429 || response.status >= 500) && attempt + 1 < attempts) {
-      await wait(500 * (attempt + 1));
-      continue;
-    }
-    const message = typeof payload.message === "string" ? payload.message : `FortyGuard request failed (${response.status})`;
-    if (response.status === 401) throw new HttpError(502, "FortyGuard rejected the server API key");
-    if (response.status === 403) throw new HttpError(502, `FortyGuard denied this analysis: ${message}`);
-    throw new HttpError(response.status, message);
   }
-  throw new HttpError(502, "FortyGuard request failed after bounded retries");
+  throw new HttpError(502, "FortyGuard credits or credentials are unavailable for this analysis");
 }
 
 async function runAnalysis(
@@ -509,8 +560,19 @@ async function runAnalysis(
   }
 
   let activityId = cached?.activityId;
+  let credentialSlot = cached?.credentialSlot;
   if (!activityId) {
     budget.claim(`${analyticType} for ${analysisDate}`);
+    const uncertainMessage = `FortyGuard ${analyticType} submission outcome is unknown for ${analysisDate}; automatic resubmission is blocked.`;
+    await writePersistedActivity({
+      schema: "sitemorph.fortyguard-activity.v1",
+      key,
+      kind: "heat",
+      status: "failed",
+      activityId: "",
+      savedAt: new Date().toISOString(),
+      error: uncertainMessage,
+    });
     const submission = await fortyGuardFetch(config, "/heatmap", {
       method: "POST",
       body: JSON.stringify({
@@ -520,6 +582,8 @@ async function runAnalysis(
         analytic_type: analyticType,
         ...(analyticType === "persistence" || analyticType === "exceedance" ? { threshold: thresholdCelsius, direction: "above" } : {}),
       }),
+    }, {
+      onApiKeySelected: (keyIndex) => { credentialSlot = keyIndex; },
     });
     const submissionData = submission.data as Record<string, unknown> | undefined;
     activityId = String(submissionData?.activity_id ?? "");
@@ -530,6 +594,7 @@ async function runAnalysis(
       kind: "heat",
       status: "pending",
       activityId,
+      credentialSlot,
       savedAt: new Date().toISOString(),
     });
   }
@@ -538,7 +603,14 @@ async function runAnalysis(
     if (attempt > 0) await wait(config.pollIntervalMs);
     let payload: Record<string, unknown>;
     try {
-      payload = await fortyGuardFetch(config, `/status/${encodeURIComponent(activityId)}`);
+      const previousSlot = credentialSlot;
+      payload = await fortyGuardFetch(config, `/status/${encodeURIComponent(activityId)}`, undefined, {
+        startKeyIndex: credentialSlot,
+        onApiKeySelected: (keyIndex) => { credentialSlot = keyIndex; },
+      });
+      if (credentialSlot !== previousSlot) {
+        await writePersistedActivity({ schema: "sitemorph.fortyguard-activity.v1", key, kind: "heat", status: "pending", activityId, credentialSlot, savedAt: new Date().toISOString() });
+      }
     } catch (error) {
       if (error instanceof HttpError && error.status === 404 && attempt < Math.min(3, pollAttempts - 1)) continue;
       throw error;
@@ -547,7 +619,7 @@ async function runAnalysis(
     const status = String(data?.status ?? payload.message ?? "").toLowerCase();
     if (status === "failed" || status === "error") {
       const message = `FortyGuard ${analyticType} activity for ${analysisDate} failed (${activityId})`;
-      await writePersistedActivity({ schema: "sitemorph.fortyguard-activity.v1", key, kind: "heat", status: "failed", activityId, savedAt: new Date().toISOString(), error: message });
+      await writePersistedActivity({ schema: "sitemorph.fortyguard-activity.v1", key, kind: "heat", status: "failed", activityId, credentialSlot, savedAt: new Date().toISOString(), error: message });
       throw new HttpError(502, message);
     }
     if (status === "completed" || status === "succeeded") {
@@ -557,7 +629,7 @@ async function runAnalysis(
         mapData: normalizeMapData(result?.map_data),
         statsData: (result?.stats_data as Record<string, unknown> | undefined) ?? {},
       };
-      await writePersistedActivity({ schema: "sitemorph.fortyguard-activity.v1", key, kind: "heat", status: "completed", activityId, savedAt: new Date().toISOString(), result: completed });
+      await writePersistedActivity({ schema: "sitemorph.fortyguard-activity.v1", key, kind: "heat", status: "completed", activityId, credentialSlot, savedAt: new Date().toISOString(), result: completed });
       return completed;
     }
   }
@@ -580,27 +652,39 @@ async function runOptionalEvidence(
   }
   if (cached?.status === "failed") throw new HttpError(502, cached.error ?? `Saved FortyGuard ${label} activity failed`);
   let activityId = cached?.activityId;
+  let credentialSlot = cached?.credentialSlot;
   if (!activityId) {
     budget.claim(label);
-    const submission = await fortyGuardFetch(config, path, { method: "POST", body: JSON.stringify(body) });
+    const uncertainMessage = `FortyGuard ${label} submission outcome is unknown; automatic resubmission is blocked.`;
+    await writePersistedActivity({ schema: "sitemorph.fortyguard-activity.v1", key, kind: "optional", status: "failed", activityId: "", savedAt: new Date().toISOString(), error: uncertainMessage });
+    const submission = await fortyGuardFetch(config, path, { method: "POST", body: JSON.stringify(body) }, {
+      onApiKeySelected: (keyIndex) => { credentialSlot = keyIndex; },
+    });
     const submissionData = submission.data as Record<string, unknown> | undefined;
     activityId = String(submissionData?.activity_id ?? "");
     if (!activityId) throw new HttpError(502, `FortyGuard ${label} submission returned no activity_id`);
-    await writePersistedActivity({ schema: "sitemorph.fortyguard-activity.v1", key, kind: "optional", status: "pending", activityId, savedAt: new Date().toISOString() });
+    await writePersistedActivity({ schema: "sitemorph.fortyguard-activity.v1", key, kind: "optional", status: "pending", activityId, credentialSlot, savedAt: new Date().toISOString() });
   }
   for (let attempt = 0; attempt < pollAttempts; attempt += 1) {
     if (attempt > 0) await wait(config.pollIntervalMs);
-    const payload = await fortyGuardFetch(config, `/status/${encodeURIComponent(activityId)}`);
+    const previousSlot = credentialSlot;
+    const payload = await fortyGuardFetch(config, `/status/${encodeURIComponent(activityId)}`, undefined, {
+      startKeyIndex: credentialSlot,
+      onApiKeySelected: (keyIndex) => { credentialSlot = keyIndex; },
+    });
+    if (credentialSlot !== previousSlot) {
+      await writePersistedActivity({ schema: "sitemorph.fortyguard-activity.v1", key, kind: "optional", status: "pending", activityId, credentialSlot, savedAt: new Date().toISOString() });
+    }
     const data = payload.data as Record<string, unknown> | undefined;
     const status = String(data?.status ?? payload.message ?? "").toLowerCase();
     if (status === "failed" || status === "error") {
       const message = `FortyGuard ${label} activity failed (${activityId})`;
-      await writePersistedActivity({ schema: "sitemorph.fortyguard-activity.v1", key, kind: "optional", status: "failed", activityId, savedAt: new Date().toISOString(), error: message });
+      await writePersistedActivity({ schema: "sitemorph.fortyguard-activity.v1", key, kind: "optional", status: "failed", activityId, credentialSlot, savedAt: new Date().toISOString(), error: message });
       throw new HttpError(502, message);
     }
     if (status === "completed" || status === "succeeded") {
       const completed: OptionalEvidenceResult = { activityId, result: (data?.result as Record<string, unknown> | undefined) ?? {} };
-      await writePersistedActivity({ schema: "sitemorph.fortyguard-activity.v1", key, kind: "optional", status: "completed", activityId, savedAt: new Date().toISOString(), result: completed });
+      await writePersistedActivity({ schema: "sitemorph.fortyguard-activity.v1", key, kind: "optional", status: "completed", activityId, credentialSlot, savedAt: new Date().toISOString(), result: completed });
       return completed;
     }
   }
@@ -752,7 +836,7 @@ async function countMissingHeatActivities(
 }
 
 async function analyzeSite(body: AnalyzeBody, config: FortyGuardConfig): Promise<SiteAnalysisResponse> {
-  if (!config.apiKey) throw new HttpError(503, "FORTYGUARD_API_KEY is not configured on the SiteMorph backend");
+  if (!configuredApiKeys(config).length) throw new HttpError(503, "FORTYGUARD_API_KEY is not configured on the SiteMorph backend");
   const polygonAoi = validateGeometry(body.geometry);
   const thresholdCelsius = body.thresholdCelsius ?? 35;
   if (!config.analysisDates.length) throw new HttpError(503, "No representative FortyGuard analysis dates are configured");
@@ -850,13 +934,12 @@ function mapDataForMetric(
 }
 
 async function fetchFortyGuardUsage(config: FortyGuardConfig): Promise<FortyGuardUsage> {
-  if (!config.apiKey) throw new HttpError(503, "FORTYGUARD_API_KEY is not configured on the SiteMorph backend");
+  if (!configuredApiKeys(config).length) throw new HttpError(503, "FORTYGUARD_API_KEY is not configured on the SiteMorph backend");
   const payload = await fortyGuardFetch(config, "/system/fetch-api-key-usage", {
     method: "POST",
     // FortyGuard requires the key in this endpoint's JSON body as well as the
     // standard api-key header. This request remains backend-only.
-    body: JSON.stringify({ api_key: config.apiKey }),
-  });
+  }, { bodyForApiKey: (apiKey) => JSON.stringify({ api_key: apiKey }) });
   const creditsTotal = findDeepNumber(payload, ["total_available_credits", "total_credits", "credits_total", "credit_limit", "monthly_credits", "allocated_credits"]);
   const creditsUsed = findDeepNumber(payload, ["cycle_credits_used", "used_credits", "credits_used", "credits_consumed", "consumed_credits", "usage_credits"]);
   const reportedRemaining = findDeepNumber(payload, ["cycle_remaining_credits", "total_remaining_credits", "remaining_credits", "credits_remaining", "available_credits", "credit_balance", "remaining"]);

@@ -6,6 +6,7 @@ type HostedEnv = {
   ASSETS: { fetch(request: Request): Promise<Response> };
   CACHE: RuntimeBucket;
   FORTYGUARD_API_KEY?: string;
+  FORTYGUARD_FALLBACK_API_KEYS?: string;
   FORTYGUARD_API_URL?: string;
   FORTYGUARD_ANALYSIS_DATES?: string;
   FORTYGUARD_GRANULARITY?: string;
@@ -36,6 +37,7 @@ const MAX_SITE_AREA_SQUARE_METERS = 25_000_000;
 
 let middlewareSignature = "";
 let middleware: Middleware | undefined;
+let middlewareConfig: ReturnType<typeof runtimeConfig> | undefined;
 
 class NodeRequestAdapter {
   method: string;
@@ -98,8 +100,13 @@ function runtimeConfig(env: HostedEnv) {
   const granularity = [60, 80, 100].includes(granularityValue) ? granularityValue as 60 | 80 | 100 : 60;
   const pollInterval = Math.max(500, Math.min(5_000, Number(env.FORTYGUARD_POLL_INTERVAL_MS) || 2_000));
   const pollAttempts = Math.max(1, Math.min(10, Number(env.FORTYGUARD_MAX_POLL_ATTEMPTS) || 8));
+  const fallbackApiKeys = (env.FORTYGUARD_FALLBACK_API_KEYS ?? "")
+    .split(",")
+    .map((key) => key.trim())
+    .filter(Boolean);
   return {
     apiKey: env.FORTYGUARD_API_KEY,
+    fallbackApiKeys,
     baseUrl,
     analysisDates: configuredDates(env),
     granularity,
@@ -115,6 +122,7 @@ function getMiddleware(env: HostedEnv): Middleware {
   const config = runtimeConfig(env);
   const signature = JSON.stringify({
     keyPresent: Boolean(config.apiKey),
+    fallbackKeyCount: config.fallbackApiKeys.length,
     baseUrl: config.baseUrl,
     dates: config.analysisDates,
     granularity: config.granularity,
@@ -122,8 +130,13 @@ function getMiddleware(env: HostedEnv): Middleware {
     maxPollAttempts: config.maxPollAttempts,
     cacheVersion: config.cacheVersion,
   });
-  if (!middleware || middlewareSignature !== signature) {
-    middleware = createSiteAnalyzeMiddleware(config) as Middleware;
+  const credentialsChanged = !middlewareConfig
+    || middlewareConfig.apiKey !== config.apiKey
+    || middlewareConfig.fallbackApiKeys.length !== config.fallbackApiKeys.length
+    || middlewareConfig.fallbackApiKeys.some((key, index) => key !== config.fallbackApiKeys[index]);
+  if (!middleware || middlewareSignature !== signature || credentialsChanged) {
+    middlewareConfig = config;
+    middleware = createSiteAnalyzeMiddleware(middlewareConfig) as Middleware;
     middlewareSignature = signature;
   }
   bindGuardedFetch({ baseUrl: config.baseUrl, granularity: config.granularity, cacheVersion: config.cacheVersion });

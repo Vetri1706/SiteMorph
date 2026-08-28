@@ -15,11 +15,16 @@ function siteMorphBackend(env: Record<string, string>): Plugin {
   const maxNewActivities = Number.isFinite(configuredActivityLimit) && configuredActivityLimit >= 0
     ? Math.floor(configuredActivityLimit)
     : 0;
+  const fallbackApiKeys = (env.FORTYGUARD_FALLBACK_API_KEYS ?? "")
+    .split(",")
+    .map((key) => key.trim())
+    .filter(Boolean);
   return {
     name: "sitemorph-backend",
     configureServer(server) {
       server.middlewares.use(createSiteAnalyzeMiddleware({
         apiKey: env.FORTYGUARD_API_KEY,
+        fallbackApiKeys,
         baseUrl: (env.FORTYGUARD_API_URL || "https://api.fortyguard.com/v1").replace(/\/$/, ""),
         analysisDates,
         granularity: [60, 80, 100].includes(Number(env.FORTYGUARD_GRANULARITY)) ? Number(env.FORTYGUARD_GRANULARITY) as 60 | 80 | 100 : 60,

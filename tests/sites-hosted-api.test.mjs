@@ -26,6 +26,12 @@ class MemoryR2 {
   async delete(key) {
     this.#objects.delete(key);
   }
+
+  jsonValuesContaining(fragment) {
+    return [...this.#objects.entries()]
+      .filter(([key]) => key.includes(fragment) && !key.endsWith(".tmp"))
+      .map(([, entry]) => JSON.parse(entry.value));
+  }
 }
 
 function polygon(longitude = -112.1) {
@@ -57,7 +63,7 @@ function requestFor(geometry, cacheOnly) {
   });
 }
 
-function hostedEnv(cache) {
+function hostedEnv(cache, overrides = {}) {
   return {
     ASSETS: { fetch: async () => new Response("missing", { status: 404 }) },
     CACHE: cache,
@@ -69,26 +75,41 @@ function hostedEnv(cache) {
     FORTYGUARD_POLL_INTERVAL_MS: "1",
     FORTYGUARD_CACHE_VERSION: "hosted-test-v1",
     SITEMORPH_HOSTED_ACTIVITY_BUDGET: "12",
+    ...overrides,
   };
 }
 
-function installFortyGuardMock() {
+function installFortyGuardMock(options = {}) {
   const original = globalThis.fetch;
   const submissions = [];
+  const submissionKeys = [];
+  const attemptedSubmissionKeys = [];
+  const statusKeys = [];
   const activities = new Map();
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
     if (url.pathname.endsWith("/heatmap") && init.method === "POST") {
       const body = JSON.parse(String(init.body));
+      const apiKey = new Headers(init.headers).get("api-key");
+      attemptedSubmissionKeys.push(apiKey);
+      const intercepted = options.interceptSubmission?.({ apiKey, body });
+      if (intercepted) return intercepted;
       const activityId = `activity-${submissions.length + 1}`;
       submissions.push(body);
-      activities.set(activityId, body);
+      submissionKeys.push(apiKey);
+      activities.set(activityId, { body, apiKey });
       return Response.json({ data: { activity_id: activityId } });
     }
     if (url.pathname.includes("/status/")) {
       const activityId = decodeURIComponent(url.pathname.split("/").at(-1));
-      const body = activities.get(activityId);
-      assert.ok(body, `unknown activity ${activityId}`);
+      const activity = activities.get(activityId);
+      assert.ok(activity, `unknown activity ${activityId}`);
+      const statusKey = new Headers(init.headers).get("api-key");
+      statusKeys.push(statusKey);
+      if (options.enforceActivityKeyOwnership && statusKey !== activity.apiKey) {
+        return Response.json({ message: "Activity not found for this credential" }, { status: 404 });
+      }
+      const body = activity.body;
       const analytic = body.analytic_type;
       const value = analytic === "persistence" ? 18 : analytic === "exceedance" ? 19 : analytic === "time_of_measure" ? 6 : undefined;
       const properties = analytic === "tcm"
@@ -109,7 +130,13 @@ function installFortyGuardMock() {
     }
     throw new Error(`Unexpected upstream request: ${url}`);
   };
-  return { submissions, restore: () => { globalThis.fetch = original; } };
+  return {
+    submissions,
+    submissionKeys,
+    attemptedSubmissionKeys,
+    statusKeys,
+    restore: () => { globalThis.fetch = original; },
+  };
 }
 
 test("cache-only hosted misses never contact FortyGuard", async () => {
@@ -195,6 +222,92 @@ test("bad-origin and public usage requests create no FortyGuard traffic", async 
     const usage = new Request("https://example.test/api/fortyguard/usage", { headers: { "Origin": "https://example.test" } });
     assert.equal((await worker.fetch(usage, env)).status, 503);
     assert.equal(mock.submissions.length, 0);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("a definitively exhausted primary key rolls over to the first fallback without expanding the activity budget", async () => {
+  const cache = new MemoryR2();
+  const env = hostedEnv(cache, { FORTYGUARD_FALLBACK_API_KEYS: "fallback-one,fallback-two" });
+  const mock = installFortyGuardMock({
+    enforceActivityKeyOwnership: true,
+    interceptSubmission: ({ apiKey }) => apiKey === "test-key-not-a-secret"
+      ? Response.json({ message: "Credit balance exhausted" }, { status: 403 })
+      : undefined,
+  });
+  try {
+    const response = await worker.fetch(requestFor(polygon(-112.5), false), env);
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.equal(mock.submissions.length, 12);
+    assert.ok(mock.attemptedSubmissionKeys.includes("test-key-not-a-secret"));
+    assert.deepEqual([...new Set(mock.submissionKeys)], ["fallback-one"]);
+    assert.deepEqual([...new Set(mock.statusKeys)], ["fallback-one"]);
+    assert.ok(!mock.attemptedSubmissionKeys.includes("fallback-two"));
+    const activityRecords = cache.jsonValuesContaining("fortyguard-activities");
+    assert.equal(activityRecords.length, 12);
+    assert.ok(activityRecords.every((entry) => entry.credentialSlot === 1));
+
+    const blocked = await worker.fetch(requestFor(polygon(-112.6), false), env);
+    assert.equal(blocked.status, 429);
+    assert.equal(mock.submissions.length, 12);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("a generic provider denial does not rotate credentials", async () => {
+  const cache = new MemoryR2();
+  const env = hostedEnv(cache, { FORTYGUARD_FALLBACK_API_KEYS: "generic-fallback-one,generic-fallback-two" });
+  const mock = installFortyGuardMock({
+    interceptSubmission: () => Response.json({ message: "Site geometry is outside supported coverage for api-key test-key-not-a-secret" }, { status: 403 }),
+  });
+  try {
+    const response = await worker.fetch(requestFor(polygon(-112.7), false), env);
+    assert.equal(response.status, 502);
+    const responseText = await response.text();
+    assert.ok(!responseText.includes("test-key-not-a-secret"));
+    assert.ok(!responseText.includes("generic-fallback-one"));
+    assert.equal(mock.submissions.length, 0);
+    assert.ok(mock.attemptedSubmissionKeys.length > 0);
+    assert.deepEqual([...new Set(mock.attemptedSubmissionKeys)], ["test-key-not-a-secret"]);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("an ambiguous provider network failure never advances to a fallback key", async () => {
+  const cache = new MemoryR2();
+  const env = hostedEnv(cache, { FORTYGUARD_FALLBACK_API_KEYS: "network-fallback-one,network-fallback-two" });
+  const mock = installFortyGuardMock({
+    interceptSubmission: () => {
+      throw new Error("simulated connection reset for network-fallback-one");
+    },
+  });
+  try {
+    const response = await worker.fetch(requestFor(polygon(-112.8), false), env);
+    assert.equal(response.status, 502);
+    assert.ok(!(await response.text()).includes("network-fallback-one"));
+    assert.equal(mock.submissions.length, 0);
+    assert.ok(mock.attemptedSubmissionKeys.length > 0);
+    assert.deepEqual([...new Set(mock.attemptedSubmissionKeys)], ["test-key-not-a-secret"]);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("a temporary API-key usage rate limit does not trigger paid-key failover", async () => {
+  const cache = new MemoryR2();
+  const env = hostedEnv(cache, { FORTYGUARD_FALLBACK_API_KEYS: "rate-fallback-one,rate-fallback-two" });
+  const mock = installFortyGuardMock({
+    interceptSubmission: () => Response.json({ message: "API key usage limit exceeded; retry later" }, { status: 429 }),
+  });
+  try {
+    const response = await worker.fetch(requestFor(polygon(-112.9), false), env);
+    assert.equal(response.status, 429);
+    assert.equal(mock.submissions.length, 0);
+    assert.ok(mock.attemptedSubmissionKeys.length > 0);
+    assert.deepEqual([...new Set(mock.attemptedSubmissionKeys)], ["test-key-not-a-secret"]);
   } finally {
     mock.restore();
   }
