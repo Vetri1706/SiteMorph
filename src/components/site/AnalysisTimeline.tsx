@@ -38,12 +38,12 @@ export function AnalysisTimeline() {
         <div className={`error-block ${status === "waiting" ? "pending-block" : ""}`}>
           <strong>{error}</strong>
           <p>{status === "waiting"
-            ? "No SiteMorph request is running now. Press Check saved result later to inspect every saved activity once without submitting new ones."
+            ? "No SiteMorph request is being held open. SiteMorph will automatically check every saved activity again; Check now is also safe and never submits new activities."
             : error.includes("backend is not connected")
               ? "Use the local Forma extension until its private hosted analysis route is deployed."
               : "Check the saved result without starting another FortyGuard analysis."}</p>
           <div className="flex flex-wrap gap-2">
-            <Button variant="secondary" onClick={() => void retry()}><RotateCcw size={14} />{error.includes("backend is not connected") ? "Retry connection" : "Check saved result"}</Button>
+            <Button variant="secondary" onClick={() => void retry()}><RotateCcw size={14} />{error.includes("backend is not connected") ? "Retry connection" : status === "waiting" ? "Check now" : "Check saved result"}</Button>
             {!error.includes("backend is not connected") && <Button variant="ghost" onClick={() => setToast("Unavailable layer skipped")}>Skip layer<ChevronRight size={14} /></Button>}
           </div>
         </div>

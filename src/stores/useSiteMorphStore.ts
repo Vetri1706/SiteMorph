@@ -103,6 +103,18 @@ type AnalysisCacheStatus = "unknown" | "checking" | "missing" | "pending" | "ava
 let selectionRequestId = 0;
 let analysisRequestId = 0;
 let initializationStarted = false;
+let savedAnalysisPollTimer: number | undefined;
+let savedAnalysisPollingStartedAt: number | undefined;
+const SAVED_ANALYSIS_POLL_INTERVAL_MS = 15_000;
+const SAVED_ANALYSIS_POLL_WINDOW_MS = 15 * 60_000;
+
+function cancelSavedAnalysisPolling(resetWindow = false): void {
+  if (savedAnalysisPollTimer !== undefined && typeof window !== "undefined") {
+    window.clearTimeout(savedAnalysisPollTimer);
+  }
+  savedAnalysisPollTimer = undefined;
+  if (resetWindow) savedAnalysisPollingStartedAt = undefined;
+}
 
 interface SiteMorphState {
   activeTab: AppTab;
@@ -192,6 +204,7 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
     if (initializationStarted) return;
     initializationStarted = true;
     if (!appConfig.mockMode) {
+      cancelSavedAnalysisPolling(true);
       set({
         selectedSitePath: null,
         siteGeometry: null,
@@ -224,6 +237,7 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
       const resolveSelectedSiteLimit = async (selectedSitePath: string, options?: { autoRestore?: boolean; silentInvalid?: boolean }) => {
         const requestId = ++selectionRequestId;
         analysisRequestId += 1;
+        cancelSavedAnalysisPolling(true);
         set({
           selectedSitePath,
           siteSelectionStatus: "resolving",
@@ -304,6 +318,7 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
 
     selectionRequestId += 1;
     analysisRequestId += 1;
+    cancelSavedAnalysisPolling(true);
     set({
       selectedSitePath: null,
       siteGeometry: null,
@@ -333,6 +348,7 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
     }
     const requestId = ++analysisRequestId;
     const isCurrentRequest = () => requestId === analysisRequestId && get().siteGeometry?.elementPath === geometry.elementPath;
+    cancelSavedAnalysisPolling(!cacheOnly);
     set({
       analysisStatus: "running",
       analysisCacheStatus: cacheOnly ? "checking" : get().analysisCacheStatus,
@@ -373,6 +389,7 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
       formaOverlayService.setAnalysisResult(result, geometry);
       const initialLayer: ClimateLayerId = appConfig.mockMode ? "persistence" : result.climateDNA.designBrief.thermalZoningConfidence === "LOW" ? "temperature" : "ranked-zones";
       await formaOverlayService.addHeatLayer(initialLayer);
+      cancelSavedAnalysisPolling(true);
       set({
         climateDNA: result.climateDNA,
         rankedTiles: result.rankedTiles ?? [],
@@ -420,6 +437,7 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
         || normalizedMessage.includes("request has stopped");
       set((state) => {
         if (savedResultMissing) {
+          cancelSavedAnalysisPolling(true);
           return {
             analysisStatus: "idle",
             analysisCacheStatus: "missing",
@@ -431,14 +449,29 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
           };
         }
         if (savedActivitiesPending) {
+          const now = Date.now();
+          savedAnalysisPollingStartedAt ??= now;
+          const pollingContinues = now - savedAnalysisPollingStartedAt < SAVED_ANALYSIS_POLL_WINDOW_MS;
+          if (pollingContinues && typeof window !== "undefined") {
+            savedAnalysisPollTimer = window.setTimeout(() => {
+              savedAnalysisPollTimer = undefined;
+              const current = get();
+              if (current.analysisStatus === "waiting" && current.siteGeometry?.elementPath === geometry.elementPath) {
+                void current.analyzeSite(true);
+              }
+            }, SAVED_ANALYSIS_POLL_INTERVAL_MS);
+          }
           return {
             analysisStatus: "waiting",
             analysisCacheStatus: "pending",
             analysisSteps: settleRunningAnalysisSteps(state.analysisSteps, "pending"),
             analysisError: message,
-            toast: "Status check finished · FortyGuard is still processing the saved activities",
+            toast: pollingContinues
+              ? "FortyGuard is processing · saved activities will be checked automatically"
+              : "Automatic checks paused after 15 minutes · use Check Processing Status to resume",
           };
         }
+        cancelSavedAnalysisPolling(true);
         return {
           analysisStatus: "failed",
           analysisSteps: settleRunningAnalysisSteps(state.analysisSteps, "failed"),

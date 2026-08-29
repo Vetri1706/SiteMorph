@@ -45,7 +45,7 @@ export function SiteTab() {
           ? "Check Saved Climate DNA"
           : "Load Saved Climate DNA";
   const actionDetail = analysisStatus === "waiting"
-    ? "Last SiteMorph request stopped · checks saved activity IDs once · no new submissions"
+    ? "Auto-checking saved activity IDs · short requests only · no new submissions"
     : firstRunReady
     ? "Explicit approval required · core thermal only · saved for automatic no-credit reuse"
     : initialAnalysisEnabled
