@@ -30,6 +30,31 @@ async function responseError(response: Response, fallback: string): Promise<Fort
   );
 }
 
+async function fetchWithDeadline(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  timeoutMs: number,
+  timeoutMessage: string,
+  timeoutCode: string,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new FortyGuardServiceError(timeoutMessage, timeoutCode, 408);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+function asSavedUsage(usage: FortyGuardUsage): FortyGuardUsage {
+  return { ...usage, source: "saved", stale: true };
+}
+
 class FortyGuardService implements FortyGuardServiceContract {
   async getUsage(): Promise<FortyGuardUsage> {
     if (appConfig.mockMode) {
@@ -37,7 +62,13 @@ class FortyGuardService implements FortyGuardServiceContract {
     }
     const storageKey = "sitemorph.fortyguard-usage.v1";
     try {
-      const response = await fetch(`${appConfig.backendUrl}/fortyguard/usage`);
+      const response = await fetchWithDeadline(
+        `${appConfig.backendUrl}/fortyguard/usage`,
+        undefined,
+        8_000,
+        "The live FortyGuard balance check timed out.",
+        "USAGE_TIMEOUT",
+      );
       if (!response.ok) {
         throw await responseError(response, "FortyGuard credit usage is unavailable");
       }
@@ -47,8 +78,22 @@ class FortyGuardService implements FortyGuardServiceContract {
     } catch (error) {
       try {
         const saved = window.localStorage.getItem(storageKey);
-        if (saved) return { ...(JSON.parse(saved) as FortyGuardUsage), source: "saved", stale: true };
+        if (saved) return asSavedUsage(JSON.parse(saved) as FortyGuardUsage);
       } catch { /* Preserve the original reporting error. */ }
+      try {
+        const response = await fetchWithDeadline(
+          "/fortyguard-usage-snapshot.json",
+          { cache: "no-store" },
+          4_000,
+          "The saved FortyGuard balance could not be loaded in time.",
+          "USAGE_SNAPSHOT_TIMEOUT",
+        );
+        if (response.ok) {
+          const usage = asSavedUsage((await response.json()) as FortyGuardUsage);
+          try { window.localStorage.setItem(storageKey, JSON.stringify(usage)); } catch { /* Storage is optional. */ }
+          return usage;
+        }
+      } catch { /* Preserve the original reporting error when every fallback is unavailable. */ }
       throw error;
     }
   }
@@ -58,15 +103,37 @@ class FortyGuardService implements FortyGuardServiceContract {
       await delay(840);
       return { climateDNA: climateMock as ClimateDNA, mapData: {} };
     }
-    const response = await fetch(`${appConfig.backendUrl}/site/analyze`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ geometry: geometry.geojson, thresholdCelsius, siteTimezone, cacheOnly }),
-    });
+    const startedAt = performance.now();
+    console.info("[SiteMorph analysis] request started", { cacheOnly });
+    let response: Response;
+    try {
+      response = await fetchWithDeadline(
+        `${appConfig.backendUrl}/site/analyze`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ geometry: geometry.geojson, thresholdCelsius, siteTimezone, cacheOnly }),
+        },
+        cacheOnly ? 15_000 : 300_000,
+        cacheOnly
+          ? "Saved Climate DNA check timed out after 15 seconds. No new FortyGuard activity was created; try checking the saved result again."
+          : "The initial Climate DNA run exceeded five minutes and was stopped. Check the saved result before starting anything new.",
+        cacheOnly ? "CACHE_CHECK_TIMEOUT" : "ANALYSIS_REQUEST_TIMEOUT",
+      );
+    } catch (error) {
+      console.warn("[SiteMorph analysis] request failed", {
+        cacheOnly,
+        durationMs: Math.round(performance.now() - startedAt),
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
     if (!response.ok) {
       throw await responseError(response, response.status === 422 ? "Site Outside Supported Coverage" : "FortyGuard site analysis failed");
     }
-    return (await response.json()) as SiteAnalysisResponse;
+    const result = (await response.json()) as SiteAnalysisResponse;
+    console.info("[SiteMorph analysis] request completed", { cacheOnly, durationMs: Math.round(performance.now() - startedAt), source: result.cache?.source ?? "unknown" });
+    return result;
   }
 }
 

@@ -18,6 +18,19 @@ export function SiteTab() {
   const savedCreditLabel = site?.creditsSavedAt
     ? new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric" }).format(new Date(site.creditsSavedAt))
     : undefined;
+  const creditUsageLabel = site?.creditsUsed !== undefined && site.creditsTotal !== undefined
+    ? `${site.creditsUsed.toLocaleString()} of ${site.creditsTotal.toLocaleString()} used`
+    : undefined;
+  const creditStatus = site?.creditsStatus ?? (site?.creditsRemaining === undefined ? "loading" : "available");
+  const creditDetail = creditStatus === "loading"
+    ? "Loading the dated saved balance"
+    : creditStatus === "unavailable"
+      ? "Safe mode did not contact the usage API and no saved snapshot was available"
+    : [
+        site?.creditsStale ? `Last saved${savedCreditLabel ? ` · ${savedCreditLabel}` : ""}` : "Live balance",
+        site?.creditsPlan,
+        creditUsageLabel,
+      ].filter(Boolean).join(" · ");
   const initialAnalysisEnabled = appConfig.paidFortyGuardAnalysis;
   const firstRunReady = analysisCacheStatus === "missing" && initialAnalysisEnabled;
   const actionLabel = analysisStatus === "running"
@@ -100,8 +113,8 @@ export function SiteTab() {
 
       <div className={`credits ${site.creditsStale ? "credits-saved" : ""}`}>
         <Database size={16} />
-        <div><span>FortyGuard Credits</span><small>{site.creditsRemaining === undefined ? "Safe mode keeps the usage API untouched" : site.creditsStale ? `Last saved${savedCreditLabel ? ` · ${savedCreditLabel}` : ""}` : "Live balance"}</small></div>
-        <strong>{site.creditsRemaining === undefined ? "Not checked" : `${site.creditsRemaining.toLocaleString()} remaining`}</strong>
+        <div><span>FortyGuard Credits</span><small>{creditDetail}</small></div>
+        <strong>{creditStatus === "loading" ? "Checking…" : site.creditsRemaining === undefined ? "Not checked" : `${site.creditsRemaining.toLocaleString()} remaining`}</strong>
       </div>
     </div>
   );

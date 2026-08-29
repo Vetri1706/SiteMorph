@@ -47,6 +47,8 @@ interface FortyGuardFetchOptions {
   bodyForApiKey?: (apiKey: string) => BodyInit | null;
   startKeyIndex?: number;
   onApiKeySelected?: (keyIndex: number) => void;
+  attempts?: number;
+  timeoutMs?: number;
 }
 
 interface AnalyzeBody {
@@ -490,7 +492,7 @@ async function fortyGuardFetch(
   const apiKeys = configuredApiKeys(config);
   if (!apiKeys.length) throw new HttpError(503, "FORTYGUARD_API_KEY is not configured on the SiteMorph backend");
   const isReadRequest = !init?.method || init.method === "GET";
-  const attempts = isReadRequest ? 3 : 1;
+  const attempts = Math.max(1, Math.min(3, options.attempts ?? (isReadRequest ? 3 : 1)));
   const requestedKeyIndex = Number.isInteger(options.startKeyIndex) ? Number(options.startKeyIndex) : undefined;
   const initialKeyIndex = Math.max(0, Math.min(requestedKeyIndex ?? preferredApiKeyIndex.get(config) ?? 0, apiKeys.length - 1));
   for (let keyIndex = initialKeyIndex; keyIndex < apiKeys.length; keyIndex += 1) {
@@ -501,7 +503,7 @@ async function fortyGuardFetch(
         response = await fetch(`${config.baseUrl}${path}`, {
           ...init,
           ...(options.bodyForApiKey ? { body: options.bodyForApiKey(apiKey) } : {}),
-          signal: init?.signal ?? AbortSignal.timeout(30_000),
+          signal: init?.signal ?? AbortSignal.timeout(options.timeoutMs ?? 30_000),
           headers: { "Content-Type": "application/json", "api-key": apiKey, ...init?.headers },
         });
       } catch (error) {
@@ -607,6 +609,8 @@ async function runAnalysis(
       payload = await fortyGuardFetch(config, `/status/${encodeURIComponent(activityId)}`, undefined, {
         startKeyIndex: credentialSlot,
         onApiKeySelected: (keyIndex) => { credentialSlot = keyIndex; },
+        attempts: pollAttempts <= 1 ? 1 : undefined,
+        timeoutMs: pollAttempts <= 1 ? 8_000 : undefined,
       });
       if (credentialSlot !== previousSlot) {
         await writePersistedActivity({ schema: "sitemorph.fortyguard-activity.v1", key, kind: "heat", status: "pending", activityId, credentialSlot, savedAt: new Date().toISOString() });
@@ -671,6 +675,8 @@ async function runOptionalEvidence(
     const payload = await fortyGuardFetch(config, `/status/${encodeURIComponent(activityId)}`, undefined, {
       startKeyIndex: credentialSlot,
       onApiKeySelected: (keyIndex) => { credentialSlot = keyIndex; },
+      attempts: pollAttempts <= 1 ? 1 : undefined,
+      timeoutMs: pollAttempts <= 1 ? 8_000 : undefined,
     });
     if (credentialSlot !== previousSlot) {
       await writePersistedActivity({ schema: "sitemorph.fortyguard-activity.v1", key, kind: "optional", status: "pending", activityId, credentialSlot, savedAt: new Date().toISOString() });
@@ -1044,6 +1050,21 @@ export function createSiteAnalyzeMiddleware(config: FortyGuardConfig) {
   const cache = new Map<string, { savedAt: string; result: SiteAnalysisResponse; persisted: boolean }>();
   const inFlight = new Map<string, Promise<{ savedAt: string; result: SiteAnalysisResponse; persisted: boolean }>>();
   let usageCache: { expiresAt: number; result: FortyGuardUsage } | undefined;
+  let requestSerial = 0;
+
+  const refreshUsage = async (): Promise<FortyGuardUsage> => {
+    const liveResult = await fetchFortyGuardUsage(config);
+    const savedAt = new Date().toISOString();
+    const result: FortyGuardUsage = { ...liveResult, source: "live", savedAt, stale: false };
+    usageCache = { expiresAt: Date.now() + 60_000, result };
+    try {
+      await writePersistentUsage({ schema: "sitemorph.fortyguard-usage.v1", savedAt, result: liveResult });
+    } catch (persistError) {
+      console.error("[SiteMorph usage] snapshot persistence failed", persistError);
+    }
+    return result;
+  };
+
   return async (request: IncomingMessage, response: ServerResponse, next: () => void): Promise<void> => {
     const url = new URL(request.url ?? "/", "http://localhost");
     if (url.pathname === "/api/fortyguard/usage") {
@@ -1053,18 +1074,22 @@ export function createSiteAnalyzeMiddleware(config: FortyGuardConfig) {
         return;
       }
       try {
-        if (!usageCache || usageCache.expiresAt <= Date.now()) {
-          const liveResult = await fetchFortyGuardUsage(config);
-          const savedAt = new Date().toISOString();
-          const result: FortyGuardUsage = { ...liveResult, source: "live", savedAt, stale: false };
-          usageCache = { expiresAt: Date.now() + 60_000, result };
-          try {
-            await writePersistentUsage({ schema: "sitemorph.fortyguard-usage.v1", savedAt, result: liveResult });
-          } catch (persistError) {
-            console.error("SiteMorph could not persist the FortyGuard usage snapshot", persistError);
-          }
+        if (usageCache && usageCache.expiresAt > Date.now()) {
+          sendJson(response, 200, usageCache.result);
+          return;
         }
-        sendJson(response, 200, usageCache.result);
+        const saved = await readPersistentUsage().catch(() => undefined);
+        if (saved) {
+          const result: FortyGuardUsage = { ...saved.result, source: "saved", savedAt: saved.savedAt, stale: true };
+          usageCache = { expiresAt: Date.now() + 15_000, result };
+          sendJson(response, 200, result);
+          console.info("[SiteMorph usage] served saved balance immediately", { savedAt: saved.savedAt });
+          void refreshUsage().catch((error) => {
+            console.warn("[SiteMorph usage] background refresh failed; saved balance retained", error instanceof Error ? error.message : String(error));
+          });
+          return;
+        }
+        sendJson(response, 200, await refreshUsage());
       } catch (error) {
         const saved = await readPersistentUsage().catch(() => undefined);
         if (saved) {
@@ -1088,21 +1113,31 @@ export function createSiteAnalyzeMiddleware(config: FortyGuardConfig) {
       sendJson(response, 405, { error: "Method not allowed" });
       return;
     }
+    const requestId = `analysis-${++requestSerial}`;
+    const startedAt = Date.now();
+    let cacheOnly = false;
+    console.info("[SiteMorph analysis] request started", { requestId });
     try {
       const body = await readJson(request);
+      cacheOnly = body.cacheOnly === true;
       const cacheKey = analysisCacheKey(body, config);
       const cached = cache.get(cacheKey);
       if (cached) {
         sendJson(response, 200, withCacheMetadata(cached.result, "memory", cacheKey, cached.savedAt, cached.persisted));
+        console.info("[SiteMorph analysis] request completed", { requestId, cacheOnly, source: "memory", durationMs: Date.now() - startedAt });
         return;
       }
       const persisted = await readPersistentAnalysis(cacheKey);
       if (persisted) {
         cache.set(cacheKey, { savedAt: persisted.savedAt, result: persisted.result, persisted: true });
         sendJson(response, 200, withCacheMetadata(persisted.result, "persistent", cacheKey, persisted.savedAt, true));
+        console.info("[SiteMorph analysis] request completed", { requestId, cacheOnly, source: "persistent", durationMs: Date.now() - startedAt });
         return;
       }
       let pending = inFlight.get(cacheKey);
+      if (body.cacheOnly && pending) {
+        throw new HttpError(409, "This Site Limit analysis is still running. Check the saved result shortly; no new activity was submitted.");
+      }
       if (!pending) {
         pending = (async () => {
           const result = await analyzeSite(body, config);
@@ -1123,12 +1158,14 @@ export function createSiteAnalyzeMiddleware(config: FortyGuardConfig) {
       try {
         const completed = await pending;
         sendJson(response, 200, withCacheMetadata(completed.result, "live", cacheKey, completed.savedAt, completed.persisted));
+        console.info("[SiteMorph analysis] request completed", { requestId, cacheOnly, source: "live", durationMs: Date.now() - startedAt });
       } finally {
         inFlight.delete(cacheKey);
       }
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500;
       const message = error instanceof Error ? error.message : "Site analysis failed";
+      console.warn("[SiteMorph analysis] request ended with error", { requestId, cacheOnly, status, durationMs: Date.now() - startedAt, message });
       sendJson(response, status, { error: message });
     }
   };

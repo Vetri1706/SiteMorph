@@ -59,6 +59,11 @@ export interface SiteContext {
   selectedSiteLimit: string;
   geometry?: SiteGeometry;
   creditsRemaining?: number;
+  creditsUsed?: number;
+  creditsTotal?: number;
+  creditsPlan?: string;
+  creditsResetsAt?: string;
+  creditsStatus?: "loading" | "available" | "unavailable";
   creditsSource?: "live" | "saved";
   creditsSavedAt?: string;
   creditsStale?: boolean;

@@ -340,28 +340,44 @@ body {
 }
 
 .brand-row {
-  min-height: 76px;
-  padding: 18px 20px 14px;
+  min-height: 92px;
+  padding: 18px 20px 16px;
+}
+
+.brand-lockup {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: center;
+  gap: 13px;
+}
+
+.brand-copy {
+  min-width: 0;
 }
 
 .brand-row h1 {
   color: #fff;
-  font-size: 25px;
-  font-weight: 700;
-  letter-spacing: -.4px;
+  font-size: 30px;
+  line-height: 1;
+  font-weight: 720;
+  letter-spacing: -.65px;
 }
 
-.brand-row p {
+.brand-row .brand-copy p {
   margin-top: 5px;
-  margin-left: 34px;
+  margin-left: 0;
   color: #c6d3dd;
   font-size: 13px;
 }
 
 .brand-mark {
-  width: 28px;
-  height: 28px;
-  flex-basis: 28px;
+  width: 48px;
+  height: 48px;
+  flex-basis: 48px;
+  border: 1px solid rgb(104 196 255 / 28%);
+  border-radius: 8px;
+  box-shadow: 0 7px 18px rgb(0 0 0 / 24%);
   filter: none;
 }
 
@@ -953,7 +969,11 @@ body {
   .recommendation-banner,
   .sticky-action,
   .credits { padding-inline: 16px; }
-  .brand-row { padding-inline: 16px; }
+  .brand-row { min-height: 86px; padding-inline: 16px; }
+  .brand-lockup { grid-template-columns: 44px minmax(0, 1fr); gap: 11px; }
+  .brand-mark { width: 44px; height: 44px; flex-basis: 44px; }
+  .brand-row h1 { font-size: 27px; }
+  .brand-row .brand-copy p { font-size: 12px; }
   .tab-list button { gap: 4px; font-size: 9px; }
 }
 .layer-scope-note{display:flex;gap:10px;align-items:flex-start;margin:0 0 12px;padding:11px 12px;border:1px solid #ccd9e2;border-left:4px solid #2e74b5;background:#f3f7fa;color:#17374b}

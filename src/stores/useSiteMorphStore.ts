@@ -19,6 +19,7 @@ import type {
   DesignBrief,
   DesignCandidate,
   FormaAnalysis,
+  FortyGuardUsage,
   GeneratedBuilding,
   RevitHandoffReadiness,
   RankedThermalTile,
@@ -79,11 +80,16 @@ const createAnalysisSteps = (pointCount?: number): AnalysisStep[] => [
   ] satisfies AnalysisStep[] : []),
 ];
 
-function applyCreditUsage(usage: { creditsRemaining: number; source?: "live" | "saved"; savedAt?: string; stale?: boolean }) {
+function applyCreditUsage(usage: FortyGuardUsage) {
   return (state: SiteMorphState): Partial<SiteMorphState> => ({
     site: state.site ? {
       ...state.site,
       creditsRemaining: usage.creditsRemaining,
+      creditsUsed: usage.creditsUsed,
+      creditsTotal: usage.creditsTotal,
+      creditsPlan: usage.plan,
+      creditsResetsAt: usage.resetsAt,
+      creditsStatus: "available",
       creditsSource: usage.source ?? "live",
       creditsSavedAt: usage.savedAt,
       creditsStale: usage.stale ?? usage.source === "saved",
@@ -94,6 +100,8 @@ function applyCreditUsage(usage: { creditsRemaining: number; source?: "live" | "
 type SiteSelectionStatus = "idle" | "waiting" | "resolving" | "ready" | "error";
 type AnalysisCacheStatus = "unknown" | "checking" | "missing" | "available";
 let selectionRequestId = 0;
+let analysisRequestId = 0;
+let initializationStarted = false;
 
 interface SiteMorphState {
   activeTab: AppTab;
@@ -180,6 +188,8 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
   setActiveTab: (activeTab) => set({ activeTab }),
 
   initialize: async () => {
+    if (initializationStarted) return;
+    initializationStarted = true;
     if (!appConfig.mockMode) {
       set({
         selectedSitePath: null,
@@ -207,11 +217,12 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
         void fortyGuardService.getUsage().then((usage) => {
           set(applyCreditUsage(usage));
         }).catch(() => {
-          // Credit reporting is informative and must not block the Forma workflow.
+          set((state) => ({ site: state.site ? { ...state.site, creditsStatus: "unavailable" } : null }));
         });
       }
       const resolveSelectedSiteLimit = async (selectedSitePath: string, options?: { autoRestore?: boolean; silentInvalid?: boolean }) => {
         const requestId = ++selectionRequestId;
+        analysisRequestId += 1;
         set({
           selectedSitePath,
           siteSelectionStatus: "resolving",
@@ -276,6 +287,7 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
         if (currentPath) await resolveSelectedSiteLimit(currentPath, { autoRestore: true, silentInvalid: true });
       }
     } catch (error) {
+      initializationStarted = false;
       set({
         connection: { connected: false, mode: appConfig.mockMode ? "mock" : "embedded", message: error instanceof Error ? error.message : "Forma connection failed" },
       });
@@ -290,6 +302,7 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
     }
 
     selectionRequestId += 1;
+    analysisRequestId += 1;
     set({
       selectedSitePath: null,
       siteGeometry: null,
@@ -317,6 +330,8 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
       set({ analysisError: "No Site Limit Selected", analysisStatus: "failed" });
       return;
     }
+    const requestId = ++analysisRequestId;
+    const isCurrentRequest = () => requestId === analysisRequestId && get().siteGeometry?.elementPath === geometry.elementPath;
     set({
       analysisStatus: "running",
       analysisCacheStatus: cacheOnly ? "checking" : get().analysisCacheStatus,
@@ -324,6 +339,7 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
       analysisSteps: createAnalysisSteps(geometry.pointCount),
     });
     const advance = async (id: string, status: AnalysisStep["status"], activityId?: string) => {
+      if (!isCurrentRequest()) return;
       set((state) => ({ analysisSteps: state.analysisSteps.map((step) => step.id === id ? { ...step, status, activityId } : step) }));
       await delay(status === "running" ? 320 : 100);
     };
@@ -333,6 +349,7 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
       await advance("geometry", "completed");
       await advance("heatmap", "running");
       const result = await climateService.analyze(geometry, 35, get().site?.timezone, cacheOnly);
+      if (!isCurrentRequest()) return;
       await advance("heatmap", "completed", result.climateDNA.activityId);
       for (const id of ["persistence", "exceedance", "peak-time", "ranking"] as const) {
         if (appConfig.mockMode && (id === "peak-time" || id === "ranking")) continue;
@@ -386,6 +403,7 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
         });
       }
     } catch (error) {
+      if (!isCurrentRequest()) return;
       const message = error instanceof Error ? error.message : "Analysis failed";
       const errorCode = error instanceof FortyGuardServiceError ? error.code : "";
       const savedResultMissing = cacheOnly && (errorCode === "SAVED_ANALYSIS_MISSING" || message.includes("No complete saved analysis exists yet"));
@@ -402,7 +420,7 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
     }
   },
 
-  retryAnalysis: async () => get().analyzeSite(!appConfig.paidFortyGuardAnalysis),
+  retryAnalysis: async () => get().analyzeSite(true),
 
   setThreshold: (value) => {
     const climateDNA = get().climateDNA;

@@ -17,9 +17,12 @@ export function AppHeader() {
   return (
     <header className="app-header">
       <div className="brand-row">
-        <div>
-          <div className="flex items-center gap-2"><img className="brand-mark" src="/sitemorph-logo.svg" alt="" /><h1>SiteMorph</h1></div>
-          <p>Climate-to-Design Agent</p>
+        <div className="brand-lockup">
+          <img className="brand-mark" src="/sitemorph-logo.svg" alt="SiteMorph" />
+          <div className="brand-copy">
+            <h1>SiteMorph</h1>
+            <p>Climate-to-Design Agent</p>
+          </div>
         </div>
         <button className="icon-button" aria-label="Settings"><Settings2 size={18} /></button>
       </div>
