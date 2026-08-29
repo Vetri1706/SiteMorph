@@ -2,3 +2,12 @@ node_modules/
 dist/
 .env
 .sitemorph-cache/
+artifacts/
+promos/
+.venv/
+__pycache__/
+.pytest_cache/
+.thumbnails/
+coverage/
+.vite/
+*.log

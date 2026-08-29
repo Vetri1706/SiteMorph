@@ -1,7 +1,17 @@
 {
-  "name": "phoneix",
+  "name": "sitemorph",
   "version": "0.0.0",
   "private": true,
+  "license": "MIT",
+  "author": "Vetri Kalanjiyam",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Vetri1706/SiteMorph.git"
+  },
+  "homepage": "https://github.com/Vetri1706/SiteMorph#readme",
+  "bugs": {
+    "url": "https://github.com/Vetri1706/SiteMorph/issues"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
