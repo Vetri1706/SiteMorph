@@ -18,7 +18,7 @@ export function AnalysisTimeline() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           {status === "failed" ? <AlertTriangle size={17} /> : status === "completed" ? <CheckCircle2 size={17} /> : <Clock3 size={17} />}
-          <strong>{status === "completed" ? mode === "mock" ? "Demo analysis loaded" : "Site analysis complete" : status === "failed" ? "Analysis needs attention" : "Analyzing site"}</strong>
+          <strong>{status === "completed" ? mode === "mock" ? "Demo analysis loaded" : "Site analysis complete" : status === "failed" ? "Analysis needs attention" : status === "waiting" ? "FortyGuard is processing" : "Analyzing site"}</strong>
         </div>
         <label className="advanced-toggle"><input type="checkbox" checked={advanced} onChange={(event) => setAdvanced(event.target.checked)} />Advanced</label>
       </div>
@@ -35,10 +35,10 @@ export function AnalysisTimeline() {
         ))}
       </div>
       {error && (
-        <div className="error-block">
+        <div className={`error-block ${status === "waiting" ? "pending-block" : ""}`}>
           <strong>{error}</strong>
-          <p>{error.includes("still running")
-            ? "The paid activity IDs were saved. Check again to resume polling without submitting new activities."
+          <p>{status === "waiting"
+            ? "No SiteMorph request is running now. Press Check saved result later to inspect every saved activity once without submitting new ones."
             : error.includes("backend is not connected")
               ? "Use the local Forma extension until its private hosted analysis route is deployed."
               : "Check the saved result without starting another FortyGuard analysis."}</p>

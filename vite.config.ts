@@ -29,7 +29,9 @@ function siteMorphBackend(env: Record<string, string>): Plugin {
         analysisDates,
         granularity: [60, 80, 100].includes(Number(env.FORTYGUARD_GRANULARITY)) ? Number(env.FORTYGUARD_GRANULARITY) as 60 | 80 | 100 : 60,
         pollIntervalMs: Number(env.FORTYGUARD_POLL_INTERVAL_MS) || 2000,
-        maxPollAttempts: Number(env.FORTYGUARD_MAX_POLL_ATTEMPTS) || 60,
+        // Keep local and hosted behavior consistent: one bounded status sweep
+        // per SiteMorph request, with saved activity IDs resumed on demand.
+        maxPollAttempts: 1,
         maxNewActivities,
         includeOptionalEvidence: env.FORTYGUARD_INCLUDE_OPTIONAL_EVIDENCE === "true",
         cacheVersion: env.FORTYGUARD_CACHE_VERSION || "v1",

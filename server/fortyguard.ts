@@ -610,13 +610,24 @@ async function runAnalysis(
         startKeyIndex: credentialSlot,
         onApiKeySelected: (keyIndex) => { credentialSlot = keyIndex; },
         attempts: pollAttempts <= 1 ? 1 : undefined,
-        timeoutMs: pollAttempts <= 1 ? 8_000 : undefined,
+        timeoutMs: pollAttempts <= 1 ? 4_000 : undefined,
       });
       if (credentialSlot !== previousSlot) {
         await writePersistedActivity({ schema: "sitemorph.fortyguard-activity.v1", key, kind: "heat", status: "pending", activityId, credentialSlot, savedAt: new Date().toISOString() });
       }
     } catch (error) {
       if (error instanceof HttpError && error.status === 404 && attempt < Math.min(3, pollAttempts - 1)) continue;
+      const message = error instanceof Error ? error.message.toLowerCase() : "";
+      const transientStatusFailure = error instanceof HttpError && (
+        error.status === 429
+        || (error.status === 502 && (
+          message.includes("network request failed")
+          || message.includes("temporarily unavailable")
+        ))
+      );
+      if (transientStatusFailure) {
+        throw new HttpError(504, `FortyGuard ${analyticType} activity for ${analysisDate} could not be checked yet (${activityId}). Its saved activity ID will be checked again later without a new submission.`);
+      }
       throw error;
     }
     const data = payload.data as Record<string, unknown> | undefined;
@@ -676,7 +687,7 @@ async function runOptionalEvidence(
       startKeyIndex: credentialSlot,
       onApiKeySelected: (keyIndex) => { credentialSlot = keyIndex; },
       attempts: pollAttempts <= 1 ? 1 : undefined,
-      timeoutMs: pollAttempts <= 1 ? 8_000 : undefined,
+      timeoutMs: pollAttempts <= 1 ? 4_000 : undefined,
     });
     if (credentialSlot !== previousSlot) {
       await writePersistedActivity({ schema: "sitemorph.fortyguard-activity.v1", key, kind: "optional", status: "pending", activityId, credentialSlot, savedAt: new Date().toISOString() });
@@ -857,15 +868,42 @@ async function analyzeSite(body: AnalyzeBody, config: FortyGuardConfig): Promise
     throw new HttpError(body.cacheOnly ? 404 : 409, message);
   }
   const budget = new ActivityBudget(activityLimit);
-  const history = await mapWithConcurrency(config.analysisDates, 2, async (date): Promise<HistoricalResult> => {
-    const [tcm, persistence, exceedance, timeOfMeasure] = await Promise.all([
-      runAnalysis("tcm", date, polygonAoi, thresholdCelsius, config, budget, pollAttempts),
-      runAnalysis("persistence", date, polygonAoi, thresholdCelsius, config, budget, pollAttempts),
-      runAnalysis("exceedance", date, polygonAoi, thresholdCelsius, config, budget, pollAttempts),
-      runAnalysis("time_of_measure", date, polygonAoi, thresholdCelsius, config, budget, pollAttempts),
-    ]);
-    return { date, results: { tcm, persistence, exceedance, time_of_measure: timeOfMeasure } };
-  });
+  const analyticTypes: AnalyticType[] = ["tcm", "persistence", "exceedance", "time_of_measure"];
+  // A resumable status check must visit every saved activity ID. Promise.all
+  // used to reject on the first pending activity, leaving later dates unchecked
+  // and encouraging repeated long-running requests. Settle every status lookup,
+  // persist all completed results, then return one concise pending response.
+  const settledHistory = await mapWithConcurrency(config.analysisDates, 2, async (date) => ({
+    date,
+    settled: await Promise.allSettled(analyticTypes.map((analyticType) =>
+      runAnalysis(analyticType, date, polygonAoi, thresholdCelsius, config, budget, pollAttempts))),
+  }));
+  const history: HistoricalResult[] = [];
+  let pendingCount = 0;
+  let firstHardFailure: unknown;
+  for (const sample of settledHistory) {
+    const results = {} as Record<AnalyticType, FortyGuardResult>;
+    sample.settled.forEach((settled, index) => {
+      const analyticType = analyticTypes[index];
+      if (settled.status === "fulfilled") {
+        results[analyticType] = settled.value;
+        return;
+      }
+      const message = settled.reason instanceof Error ? settled.reason.message : String(settled.reason);
+      if ((settled.reason instanceof HttpError && settled.reason.status === 504) || message.includes("still running")) {
+        pendingCount += 1;
+      } else if (firstHardFailure === undefined) {
+        firstHardFailure = settled.reason;
+      }
+    });
+    if (sample.settled.every((settled) => settled.status === "fulfilled")) {
+      history.push({ date: sample.date, results });
+    }
+  }
+  if (firstHardFailure !== undefined) throw firstHardFailure;
+  if (pendingCount > 0) {
+    throw new HttpError(409, `FortyGuard is still processing ${pendingCount} of ${config.analysisDates.length * analyticTypes.length} saved thermal activities. The SiteMorph request has stopped; check the saved result again without starting new activities.`);
+  }
   const normalized = normalizeClimateDNA(history, thresholdCelsius, config, body.siteTimezone || "UTC");
   const representative = history.reduce((best, sample) => summarize(sample.results.tcm, "tcm").maximum > summarize(best.results.tcm, "tcm").maximum ? sample : best);
   const representativeTemperature = summarize(representative.results.tcm, "tcm").mean;

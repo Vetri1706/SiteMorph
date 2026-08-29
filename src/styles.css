@@ -112,6 +112,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 
 .analysis-timeline { margin: 14px 0; padding: 13px; border: 1px solid var(--line); border-radius: 6px; background: #fbfcfd; font-size: 10px; }
 .analysis-timeline.timeline-running { border-left: 3px solid var(--blue); }
+.analysis-timeline.timeline-waiting { border-left: 3px solid var(--orange); }
 .analysis-timeline.timeline-completed { border-left: 3px solid var(--green); }
 .analysis-timeline.timeline-failed { border-left: 3px solid var(--red); }
 .advanced-toggle { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 8px; }
@@ -128,6 +129,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .step-state { color: var(--subtle); font-size: 7px; text-transform: uppercase; letter-spacing: .06em; }
 .error-block { margin-top: 9px; padding: 10px; background: #fff4f2; border-radius: 4px; }
 .error-block p { margin: 4px 0 9px; color: #6d4a47; font-size: 9px; }
+.error-block.pending-block { background: #fff8e8; box-shadow: inset 3px 0 #d58a10; }
+.error-block.pending-block p { color: #655136; }
 
 .empty-state { margin: 28px 0; padding: 27px 20px; border: 1px dashed #cfd5da; border-radius: 7px; text-align: center; }
 .empty-icon { display: grid; width: 42px; height: 42px; margin: 0 auto 12px; place-items: center; border-radius: 50%; color: var(--blue); background: var(--blue-soft); }

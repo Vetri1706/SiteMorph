@@ -28,6 +28,7 @@ import type {
   SiteGeometry,
 } from "../types";
 import { appConfig, delay } from "../utils/config";
+import { settleRunningAnalysisSteps } from "../utils/analysis-state";
 
 const warehouseDemoBrief: DesignBrief = {
   buildingType: "Warehouse / Distribution Facility",
@@ -98,7 +99,7 @@ function applyCreditUsage(usage: FortyGuardUsage) {
 }
 
 type SiteSelectionStatus = "idle" | "waiting" | "resolving" | "ready" | "error";
-type AnalysisCacheStatus = "unknown" | "checking" | "missing" | "available";
+type AnalysisCacheStatus = "unknown" | "checking" | "missing" | "pending" | "available";
 let selectionRequestId = 0;
 let analysisRequestId = 0;
 let initializationStarted = false;
@@ -114,7 +115,7 @@ interface SiteMorphState {
   rankedTiles: RankedThermalTile[];
   activeLayer: ClimateLayerId | null;
   overlayVisible: boolean;
-  analysisStatus: "idle" | "running" | "completed" | "failed";
+  analysisStatus: "idle" | "running" | "waiting" | "completed" | "failed";
   analysisCacheStatus: AnalysisCacheStatus;
   analysisSteps: AnalysisStep[];
   analysisError: string | null;
@@ -407,15 +408,43 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
       const message = error instanceof Error ? error.message : "Analysis failed";
       const errorCode = error instanceof FortyGuardServiceError ? error.code : "";
       const savedResultMissing = cacheOnly && (errorCode === "SAVED_ANALYSIS_MISSING" || message.includes("No complete saved analysis exists yet"));
-      set({
-        analysisStatus: savedResultMissing ? "idle" : "failed",
-        analysisCacheStatus: savedResultMissing ? "missing" : get().analysisCacheStatus,
-        analysisError: savedResultMissing ? null : message,
-        toast: savedResultMissing
-          ? appConfig.paidFortyGuardAnalysis
-            ? "No saved Climate DNA found · first thermal run requires explicit approval"
-            : "No saved Climate DNA matches this Site Limit · initial analysis is disabled"
-          : null,
+      const normalizedMessage = message.toLowerCase();
+      const savedActivitiesPending = [
+        "JOB_PENDING",
+        "CACHE_CHECK_TIMEOUT",
+        "ANALYSIS_REQUEST_TIMEOUT",
+        "ANALYSIS_ALREADY_RUNNING",
+      ].includes(errorCode)
+        || normalizedMessage.includes("still running")
+        || normalizedMessage.includes("still processing")
+        || normalizedMessage.includes("request has stopped");
+      set((state) => {
+        if (savedResultMissing) {
+          return {
+            analysisStatus: "idle",
+            analysisCacheStatus: "missing",
+            analysisSteps: settleRunningAnalysisSteps(state.analysisSteps, "pending"),
+            analysisError: null,
+            toast: appConfig.paidFortyGuardAnalysis
+              ? "No saved Climate DNA found · first thermal run requires explicit approval"
+              : "No saved Climate DNA matches this Site Limit · initial analysis is disabled",
+          };
+        }
+        if (savedActivitiesPending) {
+          return {
+            analysisStatus: "waiting",
+            analysisCacheStatus: "pending",
+            analysisSteps: settleRunningAnalysisSteps(state.analysisSteps, "pending"),
+            analysisError: message,
+            toast: "Status check finished · FortyGuard is still processing the saved activities",
+          };
+        }
+        return {
+          analysisStatus: "failed",
+          analysisSteps: settleRunningAnalysisSteps(state.analysisSteps, "failed"),
+          analysisError: message,
+          toast: null,
+        };
       });
     }
   },

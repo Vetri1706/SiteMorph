@@ -10,7 +10,7 @@
     "test:report": "node --experimental-strip-types --test tests/report.test.ts",
     "test:design": "node --experimental-strip-types --test tests/design-program.test.ts tests/design-intervention.test.ts tests/program-plan.test.ts tests/site-fit-advisor.test.ts tests/site-layout.test.ts tests/revit-handoff.test.ts tests/sun-grid.test.ts tests/geometry-validation.test.ts tests/terrain-elevation.test.ts",
     "test:revit": "node --experimental-strip-types --test tests/revit-obj.test.ts",
-    "test:cache": "node --experimental-strip-types --test tests/analysis-cache.test.ts",
+    "test:cache": "node --experimental-strip-types --test tests/analysis-cache.test.ts tests/analysis-state.test.ts",
     "test:hybrid": "node --experimental-strip-types --test tests/climate-response.test.ts",
     "build": "vite build && node scripts/prepare-sites-build.mjs && node scripts/build-sites-worker.mjs",
     "preview": "vite preview",

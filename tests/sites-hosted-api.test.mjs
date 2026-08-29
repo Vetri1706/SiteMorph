@@ -81,6 +81,7 @@ function hostedEnv(cache, overrides = {}) {
 
 function installFortyGuardMock(options = {}) {
   const original = globalThis.fetch;
+  let statusMode = options.statusMode ?? "completed";
   const submissions = [];
   const submissionKeys = [];
   const attemptedSubmissionKeys = [];
@@ -109,6 +110,8 @@ function installFortyGuardMock(options = {}) {
       if (options.enforceActivityKeyOwnership && statusKey !== activity.apiKey) {
         return Response.json({ message: "Activity not found for this credential" }, { status: 404 });
       }
+      if (statusMode === "network-error") throw new Error("simulated status connection reset");
+      if (statusMode === "running") return Response.json({ data: { status: "running" } });
       const body = activity.body;
       const analytic = body.analytic_type;
       const value = analytic === "persistence" ? 18 : analytic === "exceedance" ? 19 : analytic === "time_of_measure" ? 6 : undefined;
@@ -135,6 +138,7 @@ function installFortyGuardMock(options = {}) {
     submissionKeys,
     attemptedSubmissionKeys,
     statusKeys,
+    setStatusMode: (value) => { statusMode = value; },
     restore: () => { globalThis.fetch = original; },
   };
 }
@@ -175,6 +179,49 @@ test("one approved hosted AOI creates exactly 12 activities, persists, and exhau
     assert.equal(blocked.status, 429);
     assert.equal((await blocked.json()).code, "HOSTED_ACTIVITY_BUDGET_EXHAUSTED");
     assert.equal(mock.submissions.length, 12);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("pending saved activities are swept once per request and never resubmitted", async () => {
+  const cache = new MemoryR2();
+  const env = hostedEnv(cache);
+  const mock = installFortyGuardMock({ statusMode: "running" });
+  try {
+    const first = await worker.fetch(requestFor(polygon(-112.15), false), env);
+    assert.equal(first.status, 409, await first.clone().text());
+    assert.equal((await first.json()).code, "JOB_PENDING");
+    assert.equal(mock.submissions.length, 12);
+    assert.equal(mock.statusKeys.length, 12);
+
+    const retry = await worker.fetch(requestFor(polygon(-112.15), true), env);
+    assert.equal(retry.status, 409, await retry.clone().text());
+    assert.equal((await retry.json()).code, "JOB_PENDING");
+    assert.equal(mock.submissions.length, 12);
+    assert.equal(mock.statusKeys.length, 24);
+
+    mock.setStatusMode("completed");
+    const completed = await worker.fetch(requestFor(polygon(-112.15), true), env);
+    assert.equal(completed.status, 200, await completed.clone().text());
+    assert.equal((await completed.json()).cache.source, "live");
+    assert.equal(mock.submissions.length, 12);
+    assert.equal(mock.statusKeys.length, 36);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("a transient status-network failure keeps every saved activity resumable", async () => {
+  const cache = new MemoryR2();
+  const mock = installFortyGuardMock({ statusMode: "network-error" });
+  try {
+    const response = await worker.fetch(requestFor(polygon(-112.16), false), hostedEnv(cache));
+    assert.equal(response.status, 409, await response.clone().text());
+    assert.equal((await response.json()).code, "JOB_PENDING");
+    assert.equal(mock.submissions.length, 12);
+    assert.equal(mock.statusKeys.length, 12);
+    assert.equal(cache.jsonValuesContaining("fortyguard-activities").length, 12);
   } finally {
     mock.restore();
   }

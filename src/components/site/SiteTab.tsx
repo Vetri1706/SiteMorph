@@ -35,6 +35,8 @@ export function SiteTab() {
   const firstRunReady = analysisCacheStatus === "missing" && initialAnalysisEnabled;
   const actionLabel = analysisStatus === "running"
     ? analysisCacheStatus === "checking" ? "Checking Saved Climate DNA" : "Running Initial Climate Analysis"
+    : analysisStatus === "waiting"
+      ? "Check Processing Status"
     : analysisStatus === "completed"
       ? "Open Climate DNA"
       : firstRunReady
@@ -42,7 +44,9 @@ export function SiteTab() {
         : initialAnalysisEnabled
           ? "Check Saved Climate DNA"
           : "Load Saved Climate DNA";
-  const actionDetail = firstRunReady
+  const actionDetail = analysisStatus === "waiting"
+    ? "Last SiteMorph request stopped · checks saved activity IDs once · no new submissions"
+    : firstRunReady
     ? "Explicit approval required · core thermal only · saved for automatic no-credit reuse"
     : initialAnalysisEnabled
       ? "Saved AOI is checked first · no new FortyGuard activity starts during this check"

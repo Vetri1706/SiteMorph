@@ -99,7 +99,10 @@ function runtimeConfig(env: HostedEnv) {
   const granularityValue = Number(env.FORTYGUARD_GRANULARITY);
   const granularity = [60, 80, 100].includes(granularityValue) ? granularityValue as 60 | 80 | 100 : 60;
   const pollInterval = Math.max(500, Math.min(5_000, Number(env.FORTYGUARD_POLL_INTERVAL_MS) || 2_000));
-  const pollAttempts = Math.max(1, Math.min(10, Number(env.FORTYGUARD_MAX_POLL_ATTEMPTS) || 8));
+  // Hosted requests must never long-poll inside one Cloudflare invocation.
+  // One sweep persists every completed activity; the client can safely check
+  // again later without submitting or paying for another activity.
+  const pollAttempts = 1;
   const fallbackApiKeys = (env.FORTYGUARD_FALLBACK_API_KEYS ?? "")
     .split(",")
     .map((key) => key.trim())
@@ -341,7 +344,7 @@ function allowedOrigins(request: Request, env: HostedEnv): Set<string> {
 
 function errorCode(status: number, message: string): string {
   if (status === 404 && message.includes("No complete saved analysis")) return "SAVED_ANALYSIS_MISSING";
-  if (status === 504 || message.includes("still running")) return "JOB_PENDING";
+  if (status === 504 || message.includes("still processing") || message.includes("still running")) return "JOB_PENDING";
   if (status === 409) return "ACTIVITY_LIMIT";
   if (status === 422) return "INVALID_SITE";
   if (status === 503) return "BACKEND_NOT_CONFIGURED";
@@ -365,7 +368,7 @@ async function normalizedBackendResponse(response: Response, origin?: string): P
   const safeMessage = code === "FORTYGUARD_UPSTREAM_ERROR"
     ? "FortyGuard could not complete this analysis. No automatic resubmission will occur."
     : code === "JOB_PENDING"
-      ? "FortyGuard analysis is still running. Check again to resume the saved activities without starting new ones."
+      ? "The SiteMorph request has stopped. FortyGuard is still processing saved activities; check again later without starting new ones."
       : raw.replaceAll(/\s*\([A-Za-z0-9_-]{12,}\)/g, "");
   return json(response.status, { code, error: safeMessage }, origin);
 }
