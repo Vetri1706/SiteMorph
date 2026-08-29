@@ -399,7 +399,10 @@ export interface ProgramPlan {
   aspectRatio: number;
   orientation: string;
   northEdgeUse: string;
+  /** Legacy field name retained for saved program-plan compatibility. */
   officeMezzanineSide: ProgramPlanSide;
+  interventionProgramLabel: string;
+  interventionProgramLevel: "ground" | "upper";
   zones: ProgramPlanZone[];
   operations: {
     edgeLabel: string;
@@ -453,12 +456,26 @@ export interface SiteLayoutPlan {
   disclaimer: string;
 }
 
+export interface FormaPlacementVerification {
+  terrainBaseElevationMeters: number;
+  terrainSampleCount: number;
+  expectedCenterXMeters: number;
+  expectedCenterYMeters: number;
+  worldTransformXMeters: number;
+  worldTransformYMeters: number;
+  worldTransformElevationMeters: number;
+  meshBaseElevationMeters: number;
+  toleranceMeters: number;
+  verifiedAt: string;
+}
+
 export interface RevitHandoffReadiness {
   proposalId: string;
   formaElementPath: string;
   preparedAt: string;
   transferMode: "forma-revit-addin-beta";
   placementVerified: boolean;
+  placement: FormaPlacementVerification;
   instructions: string[];
 }
 
@@ -506,6 +523,7 @@ export interface GeneratedBuilding {
   orientationLabel: string;
   heightMeters: number;
   baseElevationMeters?: number;
+  placementVerification?: FormaPlacementVerification;
   projectFootprint: Array<[number, number]>;
   placementSummary: string;
   programPlan?: ProgramPlan;

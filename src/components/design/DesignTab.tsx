@@ -3,7 +3,7 @@ import { ArrowRight, BarChart3, Building2, Check, CheckCircle2, Download, Eye, L
 import { useSiteMorphStore } from "../../stores/useSiteMorphStore";
 import type { DesignBrief, DesignCandidate, FormaAnalysisMetric, GeneratedBuilding } from "../../types";
 import { appConfig } from "../../utils/config";
-import { createProgramPlan } from "../../utils/program-plan";
+import { createProgramPlan, formatInterventionPlacement, isConfirmedAccessRoad, presentDesignNarrative } from "../../utils/program-plan";
 import { detectBuildingTypology } from "../../utils/program-typology";
 import { createSiteFitAssessment } from "../../utils/site-fit-advisor";
 import { exportDesignEvidence, exportGenericObj } from "../../utils/revit-handoff";
@@ -63,6 +63,11 @@ function LiveBuildingResult({ building }: { building: GeneratedBuilding }) {
   const finalPlan = building.programPlan ?? createProgramPlan(requirements, planMass(building.aspectRatio), { officeMezzanineSide: finalOfficeSide });
   const initialPlan = intervention?.initial.programPlan ?? (intervention ? createProgramPlan(requirements, planMass(intervention.initial.aspectRatio), { officeMezzanineSide: intervention.initial.officeMezzanineSide }) : undefined);
   const testedPlan = intervention?.tested?.programPlan ?? (intervention?.tested ? createProgramPlan(requirements, planMass(intervention.tested.aspectRatio), { officeMezzanineSide: intervention.tested.officeMezzanineSide }) : undefined);
+  const displayedChangeSummary = presentDesignNarrative(building.changeSummary, finalPlan);
+  const responseContainsSun = building.climateResponse?.inputs.some((input) => input.id === "forma-sun" && input.source === "forma") ?? false;
+  const resolvedClimateResponse = building.climateResponse && !(responseContainsSun && building.analysisMetricSource !== "ground-grid")
+    ? building.climateResponse
+    : undefined;
   return <Section className="candidate-section">
     <SectionHeading eyebrow="Live Forma element" title={building.name} action={<SourceChip source="forma">Native geometry</SourceChip>} />
     <ProgramPlanDiagram plan={finalPlan} title="Approved program/site plan" />
@@ -71,7 +76,7 @@ function LiveBuildingResult({ building }: { building: GeneratedBuilding }) {
       <div className="validation-grid">
         <div className={`validation-metric ${building.siteLayout.parkingStatus === "resolved-concept" ? "metric-pass" : "metric-review"}`}><span>Parking</span><strong>{building.siteLayout.parkingRequirement || "Not set"}</strong><small>{building.siteLayout.parkingRequirement ? `concept capacity ${building.siteLayout.parkingConceptCapacity}` : "requirement not specified"}</small></div>
         <div className={`validation-metric ${building.siteLayout.operationsStatus === "resolved-concept" ? "metric-pass" : "metric-review"}`}><span>Operations / arrival</span><strong>{building.siteLayout.operationsStatus === "resolved-concept" ? "Shown" : "Constrained"}</strong><small>{finalPlan.operations.outdoorZoneLabel}</small></div>
-        <div className="validation-metric metric-pass"><span>Preferred access</span><strong>North concept edge</strong><small>{building.siteLayout.accessLabel}</small></div>
+        <div className={`validation-metric ${finalPlan.access.status === "requirement" ? "metric-pass" : "metric-review"}`}><span>Preferred access</span><strong>{finalPlan.access.status === "requirement" ? "Brief access stated" : "Concept edge only"}</strong><small>{finalPlan.access.status === "requirement" ? finalPlan.access.preferredRoad : "Access engineering unconfirmed"}</small></div>
       </div>
       <p className="section-intro">{building.siteOverlayNote}</p>
       <p className="button-note">{building.siteLayout.disclaimer}</p>
@@ -85,47 +90,47 @@ function LiveBuildingResult({ building }: { building: GeneratedBuilding }) {
       {building.upperFloorAreaSqFt && <div><span>Upper-floor gross area</span><strong>{building.upperFloorAreaSqFt.toLocaleString()} ft²</strong></div>}
       {building.partialTopFloorAreaSqFt && <div><span>Partial top level</span><strong>{building.partialTopFloorAreaSqFt.toLocaleString()} ft²</strong></div>}
       <div><span>Site coverage</span><strong>{building.siteCoveragePercent}%</strong></div>
-      <div><span>Open site remaining</span><strong>{building.remainingSiteAreaSqFt.toLocaleString()} ft²</strong></div>
+      <div><span>Parcel outside mass <small>before site reservations</small></span><strong>{building.remainingSiteAreaSqFt.toLocaleString()} ft²</strong></div>
       <div><span>Final mass</span><strong>{building.aspectRatio.toFixed(1)}:1 · {building.orientationLabel}</strong></div>
     </div>
-    <p className="section-intro"><strong>Placement:</strong> {building.placementSummary}</p>
+    <p className="section-intro"><strong>Placement:</strong> {formatInterventionPlacement(building.placementSummary, finalPlan)}</p>
     {intervention && intervention.outcome !== "not-required" && <div className={`intervention-result intervention-${intervention.outcome}`}>
       <div className="intervention-head"><div><span>SiteMorph measured redesign</span><strong>{intervention.outcome === "accepted" ? "Intervention accepted" : "Intervention rejected · initial restored"}</strong></div><SourceChip source="sitemorph">{intervention.outcome}</SourceChip></div>
       {(building.initialDesignImageDataUrl || building.testedDesignImageDataUrl) && <div className="intervention-images">
-        {building.initialDesignImageDataUrl && <figure><img src={building.initialDesignImageDataUrl} alt="Initial Forma building mass" /><figcaption>Initial · {intervention.initial.aspectRatio}:1 · {intervention.initial.placement}</figcaption></figure>}
-        {building.testedDesignImageDataUrl && <figure><img src={building.testedDesignImageDataUrl} alt="Tested SiteMorph building intervention" /><figcaption>Tested · {intervention.tested?.aspectRatio}:1 · {intervention.tested?.placement}</figcaption></figure>}
+        {building.initialDesignImageDataUrl && <figure><img src={building.initialDesignImageDataUrl} alt="Initial Forma building mass" /><figcaption>Initial · {intervention.initial.aspectRatio}:1 · {formatInterventionPlacement(intervention.initial.placement, initialPlan ?? finalPlan)}</figcaption></figure>}
+        {building.testedDesignImageDataUrl && <figure><img src={building.testedDesignImageDataUrl} alt="Tested SiteMorph building intervention" /><figcaption>Tested · {intervention.tested?.aspectRatio}:1 · {formatInterventionPlacement(intervention.tested?.placement ?? "Test placement", testedPlan ?? finalPlan)}</figcaption></figure>}
       </div>}
       {initialPlan && testedPlan && <div className="intervention-plan-compare"><ProgramPlanDiagram plan={initialPlan} title="Initial program plan" compact /><ProgramPlanDiagram plan={testedPlan} title="Tested program plan" compact /></div>}
-      <div className="intervention-story"><p><b>Detected issue</b>{intervention.issue}</p><p><b>Action tested</b>{intervention.action}</p><p><b>Acceptance rule</b>{intervention.objective}</p></div>
+      <div className="intervention-story"><p><b>Detected issue</b>{intervention.issue}</p><p><b>Action tested</b>{presentDesignNarrative(intervention.action, testedPlan ?? finalPlan)}</p><p><b>Acceptance rule</b>{intervention.objective}</p></div>
       {intervention.tested && <div className="intervention-deltas">
         <div><span>Aspect ratio</span><b>{intervention.initial.aspectRatio}:1</b><ArrowRight size={13} /><strong>{intervention.tested.aspectRatio}:1</strong></div>
-        <div><span>Placement</span><b>{intervention.initial.placement}</b><ArrowRight size={13} /><strong>{intervention.tested.placement}</strong></div>
-        <div><span>Sensitive / upper program</span><b>{intervention.initial.officeMezzanineSide}</b><ArrowRight size={13} /><strong>{intervention.tested.officeMezzanineSide}</strong></div>
+        <div><span>Placement</span><b>{formatInterventionPlacement(intervention.initial.placement, initialPlan ?? finalPlan)}</b><ArrowRight size={13} /><strong>{formatInterventionPlacement(intervention.tested.placement, testedPlan ?? finalPlan)}</strong></div>
+        <div><span>{(testedPlan ?? finalPlan).interventionProgramLabel}</span><b>{intervention.initial.officeMezzanineSide}</b><ArrowRight size={13} /><strong>{intervention.tested.officeMezzanineSide}</strong></div>
         <div><span>Mean ground sun</span><b>{intervention.initial.meanSunHours ?? "Unavailable"}</b><ArrowRight size={13} /><strong>{intervention.tested.meanSunHours ?? "Unavailable"}</strong></div>
       </div>}
     </div>}
     <details className="forma-validation" open>
-      <summary><span><BarChart3 size={14} />Forma sun validation</span><span>Completed</span></summary>
+      <summary><span><BarChart3 size={14} />{hasGridMetrics ? "Forma Sun ground-grid validation" : "Forma Sun job status"}</span><span>{hasGridMetrics ? "Measured" : "Native job completed"}</span></summary>
       {hasGridMetrics ? <div className="validation-grid"><div className="validation-metric metric-pass"><span>Mean ground sun</span><strong>{building.meanSunHours}</strong><small>hours</small></div><div className="validation-metric metric-review"><span>Maximum ground sun</span><strong>{building.maxSunHours}</strong><small>hours</small></div></div> : <div className="inline-warning"><BarChart3 size={16} /><div><strong>Native result completed</strong><span>Open Forma’s analysis result to inspect the surface colors; the embedded SDK returned no readable ground grid.</span></div></div>}
-      <p className="section-intro">{building.changeSummary}</p>
+      <p className="section-intro">{displayedChangeSummary}</p>
       {building.analysisNote && <p className="helper-copy">{building.analysisNote}</p>}
       <SourceChip source="forma">Analysis {building.sunAnalysisId}</SourceChip>
     </details>
-    {building.climateResponse && <div className="climate-response-result">
-      <div className="intervention-head"><div><span>FortyGuard + Forma</span><strong>{building.climateResponse.label}</strong></div><SourceChip source="sitemorph">{building.climateResponse.status}</SourceChip></div>
+    {resolvedClimateResponse && <div className="climate-response-result">
+      <div className="intervention-head"><div><span>FortyGuard + Forma</span><strong>{resolvedClimateResponse.label}</strong></div><SourceChip source="sitemorph">{resolvedClimateResponse.status}</SourceChip></div>
       <div className="validation-grid">
-        <div className="validation-metric metric-review"><span>Mean response</span><strong>{building.climateResponse.meanRiskScore}</strong><small>0–100 index</small></div>
-        <div className="validation-metric metric-review"><span>Maximum response</span><strong>{building.climateResponse.maximumRiskScore}</strong><small>0–100 index</small></div>
-        <div className="validation-metric metric-pass"><span>Historical baseline</span><strong>{building.climateResponse.historicalBaselineScore}</strong><small>FortyGuard</small></div>
-        <div className="validation-metric metric-pass"><span>Spatial grid</span><strong>{building.climateResponse.resolutionMeters}</strong><small>meters</small></div>
+        <div className="validation-metric metric-review"><span>Mean response</span><strong>{resolvedClimateResponse.meanRiskScore}</strong><small>0–100 index</small></div>
+        <div className="validation-metric metric-review"><span>Maximum response</span><strong>{resolvedClimateResponse.maximumRiskScore}</strong><small>0–100 index</small></div>
+        <div className="validation-metric metric-pass"><span>Historical baseline</span><strong>{resolvedClimateResponse.historicalBaselineScore}</strong><small>FortyGuard</small></div>
+        <div className="validation-metric metric-pass"><span>Spatial grid</span><strong>{resolvedClimateResponse.resolutionMeters}</strong><small>meters</small></div>
       </div>
-      <div className="response-inputs">{building.climateResponse.inputs.map((input) => <div key={input.id}><SourceChip source={input.source}>{input.source === "fortyguard" ? "Historical" : "Native Forma"}</SourceChip><span>{input.label}</span><b>{input.configuredWeightPercent}% · {input.coveragePercent}% coverage</b></div>)}</div>
-      <p className="section-intro">{building.climateResponse.formula}</p>
-      <p className="helper-copy">{building.climateResponse.note}</p>
+      <div className="response-inputs">{resolvedClimateResponse.inputs.map((input) => <div key={input.id}><SourceChip source={input.source}>{input.source === "fortyguard" ? "Historical" : "Native Forma"}</SourceChip><span>{input.label}</span><b>{input.configuredWeightPercent}% · {input.coveragePercent}% coverage</b></div>)}</div>
+      <p className="section-intro">{resolvedClimateResponse.formula}</p>
+      <p className="helper-copy">{resolvedClimateResponse.note}</p>
     </div>}
     <div className="revit-handoff-block">
       <Button className="w-full" disabled={!geometry || revitHandoffStatus === "preparing"} onClick={() => void prepareRevitHandoff()}><Send size={15} />{revitHandoffStatus === "preparing" ? "Verifying Forma Proposal…" : revitHandoffStatus === "ready" ? "Forma Proposal Ready for Revit" : "Prepare Forma Proposal for Revit"}</Button>
-      {revitHandoff && <div className="revit-handoff-guide"><strong><CheckCircle2 size={15} />Native Forma → Revit transfer ready</strong><p>SiteMorph verified and highlighted element <code>{revitHandoff.formaElementPath.split("/").at(-1)}</code>.</p><ol>{revitHandoff.instructions.map((instruction) => <li key={instruction}>{instruction}</li>)}</ol></div>}
+      {revitHandoff && <div className="revit-handoff-guide"><strong><CheckCircle2 size={15} />Forma proposal verified for Revit handoff</strong><p>SiteMorph verified and highlighted element <code>{revitHandoff.formaElementPath.split("/").at(-1)}</code>. Persisted XY, terrain Z and generated mesh Z agree within {revitHandoff.placement.toleranceMeters.toFixed(2)} m across {revitHandoff.placement.terrainSampleCount} terrain samples. The extension cannot invoke Forma’s host Revit menu; complete the send in Forma.</p><ol>{revitHandoff.instructions.map((instruction) => <li key={instruction}>{instruction}</li>)}</ol></div>}
     </div>
     <Button variant="secondary" className="w-full" disabled={!geometry || !climate} onClick={() => {
       if (!geometry || !climate) return;
@@ -133,7 +138,7 @@ function LiveBuildingResult({ building }: { building: GeneratedBuilding }) {
       setToast("SiteMorph design evidence JSON exported");
     }}><Download size={15} />Download Design Evidence JSON</Button>
     <Button variant="ghost" className="w-full" onClick={() => { exportGenericObj(building); setToast("Optional generic OBJ reference exported"); }}><Download size={14} />Optional generic OBJ</Button>
-    <p className="button-note">The persisted Forma proposal is the Revit handoff. Revit does not import the JSON; it is an optional audit sidecar. OBJ remains non-BIM reference geometry.</p>
+    <p className="button-note">Start from a new blank Revit file and run Load From Forma once; repeated loads into the same file are unsupported. For an existing model, use a blank wrapper, then Link Revit / Bind Link as appropriate. JSON is an audit sidecar, and OBJ is generic concept geometry—not native BIM.</p>
   </Section>;
 }
 
@@ -162,6 +167,12 @@ export function DesignTab() {
   const typology = detectBuildingTypology(brief.buildingType);
   const programTotal = brief.program.reduce((total, item) => total + item.areaSqFt, 0);
   const currentBuildingMatchesBrief = generatedBuilding?.name === brief.buildingType;
+  const plannedFootprintSqFt = brief.targetFootprintSqFt || brief.totalAreaSqFt / Math.max(1, brief.floors);
+  const hasPlannedUpperArea = brief.totalAreaSqFt > plannedFootprintSqFt;
+  const loopProgramLabel = hasPlannedUpperArea ? typology.upperLevelLabel : typology.occupiedProgramLabel;
+  const testPlacementLabel = isConfirmedAccessRoad(brief.preferredAccessRoad)
+    ? "north-west placement · stated access considered"
+    : "north-west concept placement · access unconfirmed";
 
   return (
     <div className="tab-content">
@@ -175,7 +186,7 @@ export function DesignTab() {
       <Section>
         <SectionHeading title="Project requirements" action={<SourceChip source="sitemorph">Climate Design Brief</SourceChip>} />
         <label className="field"><span>Building Type</span><input id="building-type-input" value={brief.buildingType} onChange={(event) => updateBrief({ buildingType: event.target.value })} /></label>
-        <div className="form-grid"><NumberField label="Total Area" value={brief.totalAreaSqFt} suffix="ft²" onChange={(totalAreaSqFt) => updateBrief({ totalAreaSqFt })} /><NumberField label="Floors" value={brief.floors} onChange={(floors) => updateBrief({ floors })} /><NumberField label="Target footprint" value={brief.targetFootprintSqFt} suffix="ft²" onChange={(targetFootprintSqFt) => updateBrief({ targetFootprintSqFt })} /><NumberField label="Maximum height" value={brief.maximumHeightFt} suffix="ft" onChange={(maximumHeightFt) => updateBrief({ maximumHeightFt })} /><NumberField label="Required parking" value={brief.requiredParking} onChange={(requiredParking) => updateBrief({ requiredParking })} /><NumberField label={typology.key === "logistics" ? "Loading docks" : "Service / arrival bays"} value={brief.loadingDocks} onChange={(loadingDocks) => updateBrief({ loadingDocks })} /></div>
+        <div className="form-grid"><NumberField label="Total Area" value={brief.totalAreaSqFt} suffix="ft²" onChange={(totalAreaSqFt) => updateBrief({ totalAreaSqFt })} /><NumberField label="Floors" value={brief.floors} onChange={(floors) => updateBrief({ floors })} /><NumberField label="Target footprint" value={brief.targetFootprintSqFt} suffix="ft²" onChange={(targetFootprintSqFt) => updateBrief({ targetFootprintSqFt })} /><NumberField label="Maximum height" value={brief.maximumHeightFt} suffix="ft" onChange={(maximumHeightFt) => updateBrief({ maximumHeightFt })} /><NumberField label={selectedSiteFitOptionId ? "Preliminary parking allowance" : "Required parking"} value={brief.requiredParking} onChange={(requiredParking) => updateBrief({ requiredParking })} /><NumberField label={typology.key === "logistics" ? "Loading docks" : "Service / arrival bays"} value={brief.loadingDocks} onChange={(loadingDocks) => updateBrief({ loadingDocks })} /></div>
         <label className="field"><span>Preferred access road</span><input value={brief.preferredAccessRoad} onChange={(event) => updateBrief({ preferredAccessRoad: event.target.value })} /></label>
         <label className="field"><span>Priority</span><select value={brief.priority} onChange={(event) => updateBrief({ priority: event.target.value as DesignBrief["priority"] })}><option>Balanced</option><option>Thermal Performance</option><option>Operational Efficiency</option><option>Maximum Usable Area</option></select></label>
       </Section>
@@ -189,11 +200,11 @@ export function DesignTab() {
       {!appConfig.mockMode && <>
         <div className="measured-loop-contract">
           <div><SourceChip source="sitemorph">Measured loop v2</SourceChip><strong>One intervention. Two native Forma analyses. One evidence-based decision.</strong></div>
-          <ol><li><span>Initial</span>1.6:1 · balanced placement · north sensitive/upper program</li><li><span>Test</span>2.2:1 · north-west placement · east sensitive/upper program</li><li><span>Decide</span>Accept measured improvement or restore initial</li></ol>
+          <ol><li><span>Initial</span>1.6:1 · balanced placement · north {loopProgramLabel.toLowerCase()}</li><li><span>Test</span>2.2:1 · {testPlacementLabel} · east {loopProgramLabel.toLowerCase()}</li><li><span>Decide</span>Accept measured improvement or restore initial</li></ol>
         </div>
         {hasLegacyBuildingResult && <div className="inline-warning"><BarChart3 size={16} /><div><strong>This proposal predates the measured redesign loop.</strong><span>Its existing Forma analysis remains valid, but it has no initial/tested captures or v2 acceptance decision. Run the measured redesign once to create that evidence.</span></div></div>}
         {requirementsError && <div className="inline-warning"><Building2 size={16} /><div><strong>Requirements conflict</strong><span>{requirementsError}</span></div></div>}
-        {buildingStatus === "generating" || buildingStatus === "analyzing" ? <div className="generation-state"><div className="flex items-center gap-2"><LoaderCircle className="animate-spin" size={17} /><strong>Forma design loop running</strong></div>{["Creating the brief-driven initial mass","Running native June 21 Sun analysis","Testing aspect ratio, placement and program side","Running Forma Rapid Wind and resolving the hybrid grid","Accepting only a measured improvement"].map((step) => <div key={step}><CheckCircle2 size={14} />{step}</div>)}<p>Native Forma jobs and the geometry-aware Wind prediction can take several minutes. No new FortyGuard request is made.</p></div> : null}
+        {buildingStatus === "generating" || buildingStatus === "analyzing" ? <div className="generation-state"><div className="flex items-center gap-2"><LoaderCircle className="animate-spin" size={17} /><strong>Forma design loop running</strong></div>{["Creating the brief-driven initial mass","Running native June 21 Sun analysis",`Testing aspect ratio, placement and ${loopProgramLabel.toLowerCase()} side`,"Running Forma Rapid Wind and resolving the hybrid grid","Accepting only a measured improvement"].map((step) => <div key={step}><CheckCircle2 size={14} />{step}</div>)}<p>Native Forma jobs and the geometry-aware Wind prediction can take several minutes. No new FortyGuard request is made.</p></div> : null}
         <Button className="w-full" disabled={buildingStatus === "generating" || buildingStatus === "analyzing" || !brief.buildingType.trim() || Boolean(requirementsError) || (brief.totalAreaSqFt <= 0 && brief.targetFootprintSqFt <= 0)} onClick={() => void generateBuilding()}><Sparkles size={15} />{hasLegacyBuildingResult && currentBuildingMatchesBrief ? "Run Measured Redesign" : generatedBuilding && currentBuildingMatchesBrief ? "Run Redesign Again" : "Generate + Test Building"}<ArrowRight size={15} /></Button>
         <p className="button-note">Creates an actual Forma floor stack plus a typology-aware terrain concept overlay for parking, access and site operations. No A/B/C candidates and no mocked validation.</p>
         {generatedBuilding && currentBuildingMatchesBrief && <LiveBuildingResult building={generatedBuilding} />}

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { DesignBrief } from "../src/types/index.ts";
-import { createProgramPlan } from "../src/utils/program-plan.ts";
+import { createProgramPlan, formatInterventionPlacement, groundZonesInSpatialOrder, presentDesignNarrative } from "../src/utils/program-plan.ts";
 
 const requirements: DesignBrief = {
   buildingType: "Climate-controlled logistics / distribution facility",
@@ -65,4 +65,43 @@ test("uses a healthcare template instead of substituting a warehouse when progra
   assert.equal(healthcare.operations.edgeLabel, "North patient and emergency arrival");
   assert.equal(healthcare.operations.itemLabel, "service bay");
   assert.match(healthcare.programSummary, /not itemized/i);
+});
+
+test("uses an honest one-floor retail program and does not claim confirmed access", () => {
+  const retailBrief: DesignBrief = {
+    ...requirements,
+    buildingType: "Neighborhood retail / supermarket",
+    totalAreaSqFt: 50_000,
+    targetFootprintSqFt: 50_000,
+    floors: 1,
+    program: [],
+    requiredParking: 150,
+    loadingDocks: 3,
+    preferredAccessRoad: "Confirm primary access edge from Forma context",
+  };
+  const retail = createProgramPlan(retailBrief, {
+    ...mass,
+    footprintSqFt: 50_000,
+    grossFloorAreaSqFt: 50_000,
+    mezzanineAreaSqFt: 0,
+    aspectRatio: 1.5,
+  }, { officeMezzanineSide: "East side" });
+  const groundZones = retail.zones.filter((zone) => zone.level === "ground");
+  const customerZone = groundZones.find((zone) => zone.id === "sales")!;
+
+  assert.equal(retail.typology, "retail");
+  assert.equal(retail.interventionProgramLabel, "Occupied customer / retail program");
+  assert.equal(retail.interventionProgramLevel, "ground");
+  assert.equal(retail.access.status, "to-be-confirmed");
+  assert.equal(retail.access.preferredRoad, "To be confirmed");
+  assert.equal(customerZone.side, "east");
+  assert.equal(groundZonesInSpatialOrder(retail).at(-1)?.id, "sales");
+  assert.ok(groundZones.every((zone) => Math.abs(zone.widthFt * zone.depthFt - zone.areaSqFt) < 100));
+  assert.ok(Math.abs(groundZones.reduce((sum, zone) => sum + zone.widthFt, 0) - retail.buildingWidthFt) < 1);
+  assert.match(formatInterventionPlacement("North-west, access aligned", retail), /access unconfirmed/i);
+  assert.doesNotMatch(formatInterventionPlacement("North-west, access aligned", retail), /access aligned/i);
+  const narrative = presentDesignNarrative("Test an access-aligned mass and move the sensitive upper program east.", retail);
+  assert.match(narrative, /occupied customer \/ retail program/i);
+  assert.match(narrative, /access unconfirmed/i);
+  assert.doesNotMatch(narrative, /sensitive upper program|access-aligned|an concept/i);
 });

@@ -37,6 +37,33 @@ function pointInPolygon(point: [number, number], polygon: Array<[number, number]
   return inside;
 }
 
+function validateDecodedSunGrid(source: ScalarAnalysisGrid): void {
+  if (!(source.grid instanceof Float32Array)) {
+    throw new Error("Forma Sun samples must be decoded to exposure hours before building a Climate Response.");
+  }
+  const expectedLength = source.width * source.height;
+  if (!Number.isInteger(source.width) || source.width <= 0
+    || !Number.isInteger(source.height) || source.height <= 0
+    || source.grid.length !== expectedLength
+    || (source.mask && source.mask.length !== expectedLength)) {
+    throw new Error("Forma returned a ground Sun grid whose dimensions do not match its samples and mask.");
+  }
+
+  let validSamples = 0;
+  for (let index = 0; index < source.grid.length; index += 1) {
+    if (source.mask?.[index] === 0) continue;
+    const value = Number(source.grid[index]);
+    if (!Number.isFinite(value)) {
+      throw new Error("Forma returned a non-finite ground Sun value without masking that cell.");
+    }
+    if (value < 0 || value > 24) {
+      throw new Error(`Forma returned an implausible daily Sun value (${value.toFixed(2)} h).`);
+    }
+    validSamples += 1;
+  }
+  if (!validSamples) throw new Error("Forma returned no valid ground Sun samples.");
+}
+
 function sampleGrid(source: ScalarAnalysisGrid, x: number, y: number): number | undefined {
   const column = Math.floor((x - source.x0) / source.resolution);
   const row = Math.floor((source.y0 - y) / source.resolution);
@@ -55,6 +82,7 @@ export function historicalHeatBurden(climate: ClimateDNA): number {
 }
 
 export function buildClimateResponse({ climate, siteBoundary, sun, wind }: ClimateResponseInputs): ClimateResponseResult {
+  if (sun) validateDecodedSunGrid(sun);
   const target = sun ?? wind;
   if (!target) throw new Error("A readable Forma Sun or Wind grid is required for the hybrid Climate Response.");
   if (siteBoundary.length < 3) throw new Error("The Forma Site Limit boundary is required for the hybrid Climate Response.");
@@ -63,6 +91,7 @@ export function buildClimateResponse({ climate, siteBoundary, sun, wind }: Clima
   const mask = new Uint8Array(output.length);
   const baseline = historicalHeatBurden(climate);
   let validCount = 0;
+  let siteCellCount = 0;
   let sunCount = 0;
   let windCount = 0;
   let total = 0;
@@ -71,10 +100,10 @@ export function buildClimateResponse({ climate, siteBoundary, sun, wind }: Clima
   for (let row = 0; row < target.height; row += 1) {
     for (let column = 0; column < target.width; column += 1) {
       const index = row * target.width + column;
-      if (target.mask && target.mask[index] === 0) continue;
       const x = target.x0 + (column + 0.5) * target.resolution;
       const y = target.y0 - (row + 0.5) * target.resolution;
       if (!pointInPolygon([x, y], siteBoundary)) continue;
+      siteCellCount += 1;
 
       let weightedRisk = baseline * FG_WEIGHT;
       let activeWeight = FG_WEIGHT;
@@ -92,6 +121,10 @@ export function buildClimateResponse({ climate, siteBoundary, sun, wind }: Clima
         activeWeight += WIND_WEIGHT;
         windCount += 1;
       }
+      // A fine-grained response cell must be supported by at least one native
+      // Forma grid. Historical FortyGuard evidence remains site-wide, but it
+      // must not manufacture a fine raster where both native inputs are absent.
+      if (sunValue === undefined && windValue === undefined) continue;
       const score = Number(((weightedRisk / activeWeight) * 100).toFixed(2));
       output[index] = score;
       mask[index] = 1;
@@ -102,7 +135,7 @@ export function buildClimateResponse({ climate, siteBoundary, sun, wind }: Clima
   }
 
   if (!validCount) throw new Error("Forma analysis grids did not overlap the selected Site Limit.");
-  const coverage = (count: number) => Number(((count / validCount) * 100).toFixed(1));
+  const coverage = (count: number) => Number(((count / Math.max(1, siteCellCount)) * 100).toFixed(1));
   const inputs: ClimateResponseResult["summary"]["inputs"] = [{
     id: "fortyguard-history",
     label: "FortyGuard hot-season historical burden",
@@ -130,7 +163,7 @@ export function buildClimateResponse({ climate, siteBoundary, sun, wind }: Clima
     coveragePercent: coverage(windCount),
   });
 
-  const missing = [sun ? null : "Sun", wind ? null : "Wind"].filter((item): item is string => Boolean(item));
+  const missing = [sun && sunCount > 0 ? null : "Sun", wind && windCount > 0 ? null : "Wind"].filter((item): item is string => Boolean(item));
   return {
     grid: {
       grid: output,

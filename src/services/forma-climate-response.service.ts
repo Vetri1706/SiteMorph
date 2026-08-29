@@ -1,5 +1,6 @@
 import type { ClimateDNA, ClimateResponseResult, GeneratedBuilding, SiteGeometry } from "../types";
 import { buildClimateResponse, type ScalarAnalysisGrid } from "../utils/climate-response";
+import { decodeSunGroundGrid } from "../utils/sun-grid";
 import { getFormaClient } from "./forma.service";
 
 const HEIGHT_MAP_SIZE = 500;
@@ -112,9 +113,10 @@ async function loadSunGrid(
   if (analysis.status !== "SUCCEEDED") return undefined;
   const grid = await Forma.analysis.getGroundGrid({ analysis });
   if (!grid?.grid.length) return undefined;
+  const decoded = decodeSunGroundGrid(grid.grid, grid.mask, analysis.parameters.sunPositionsPerHour);
   return {
-    grid: grid.grid,
-    mask: grid.mask,
+    grid: decoded.grid,
+    mask: decoded.mask,
     width: grid.width,
     height: grid.height,
     x0: grid.x0,

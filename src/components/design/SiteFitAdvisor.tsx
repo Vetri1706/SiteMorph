@@ -16,7 +16,7 @@ function FitOptionCard({ option, selected, onSelect }: { option: SiteFitOption; 
       <b>{option.score}<small>/100</small></b>
     </div>
     <p>{option.sizeSummary}</p>
-    <div className="site-fit-metrics"><span><b>{option.estimatedSiteCoveragePercent}%</b> coverage</span><span><b>{option.brief.requiredParking}</b> parking</span><span><b>{option.brief.maximumHeightFt} ft</b> height</span></div>
+    <div className="site-fit-metrics"><span><b>{option.estimatedSiteCoveragePercent}%</b> coverage</span><span><b>{option.brief.requiredParking}</b> preliminary parking allowance</span><span><b>{option.brief.maximumHeightFt} ft</b> height</span></div>
     <div className="site-fit-reason"><MapPinned size={14} /><span>{option.reasons[0]}</span></div>
     <details><summary>Why this result</summary><ul>{option.reasons.slice(1).map((reason) => <li key={reason}>{reason}</li>)}</ul><div className="site-fit-caution"><AlertTriangle size={13} /><span>{option.cautions[0]}</span></div></details>
     <Button variant={selected ? "secondary" : option.rank === 1 ? "primary" : "ghost"} className="w-full" onClick={onSelect}>{selected ? <><Check size={14} />Brief selected</> : "Use this brief"}</Button>

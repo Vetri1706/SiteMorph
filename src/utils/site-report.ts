@@ -21,9 +21,9 @@ import {
 } from "docx";
 import type { ITableBordersOptions } from "docx";
 
-import type { AgentTraceEvent, ClimateDNA, DesignBrief, GeneratedBuilding, ProgramPlan, SiteContext } from "../types";
+import type { AgentTraceEvent, ClimateDNA, DesignBrief, GeneratedBuilding, ProgramPlan, SiteContext, SiteFitAssessment } from "../types";
 import type { SiteReportAssets } from "./report-assets";
-import { createProgramPlan } from "./program-plan.ts";
+import { createProgramPlan, formatInterventionPlacement, groundZonesInSpatialOrder, presentDesignNarrative } from "./program-plan.ts";
 
 interface ReportInput {
   climate: ClimateDNA;
@@ -32,6 +32,8 @@ interface ReportInput {
   building: GeneratedBuilding | null;
   trace: AgentTraceEvent[];
   assets?: SiteReportAssets;
+  siteFitAssessment?: SiteFitAssessment;
+  selectedSiteFitOptionId?: string | null;
 }
 
 const PAGE_WIDTH_DXA = 9360;
@@ -202,23 +204,48 @@ function programPlanCell(title: string, lines: string[], width: number, fill: st
 
 function programPlanTable(plan: ProgramPlan): Table {
   const areaAndSize = (areaSqFt: number, widthFt: number, depthFt: number) => `${formatNumber(areaSqFt)} ft2  |  ${widthFt} ft x ${depthFt} ft`;
+  const groundZones = groundZonesInSpatialOrder(plan);
+  const upperZones = plan.zones.filter((zone) => zone.level !== "ground");
+  const groundTotal = groundZones.reduce((sum, zone) => sum + zone.areaSqFt, 0);
+  let allocatedWidth = 0;
+  const columnWidths = groundZones.length ? groundZones.map((zone, index) => {
+    const width = index === groundZones.length - 1
+      ? PAGE_WIDTH_DXA - allocatedWidth
+      : Math.max(1, Math.round(PAGE_WIDTH_DXA * zone.areaSqFt / Math.max(1, groundTotal)));
+    allocatedWidth += width;
+    return width;
+  }) : [PAGE_WIDTH_DXA];
+  const columnCount = columnWidths.length;
   const rows: TableRow[] = [
-    new TableRow({ cantSplit: true, children: [programPlanCell(plan.operations.edgeLabel.toUpperCase(), [plan.operations.itemCount ? `${plan.operations.itemCount} ${plan.operations.itemLabel}${plan.operations.itemCount === 1 ? "" : "s"}  |  approx. ${plan.operations.approximateItemSpacingFt} ft spacing` : "Arrival, access and servicing to be resolved"], PAGE_WIDTH_DXA, NAVY, { color: WHITE, columnSpan: 3 })] }),
-    new TableRow({ cantSplit: true, children: [programPlanCell(plan.operations.shelteredBandLabel.toUpperCase(), [`${plan.operations.shelteredBandDepthFt} ft concept depth`], PAGE_WIDTH_DXA, "DDF5F1", { color: "16695F", columnSpan: 3 })] }),
+    new TableRow({ cantSplit: true, children: [programPlanCell(plan.operations.edgeLabel.toUpperCase(), [plan.operations.itemCount ? `${plan.operations.itemCount} ${plan.operations.itemLabel}${plan.operations.itemCount === 1 ? "" : "s"}  |  approx. ${plan.operations.approximateItemSpacingFt} ft spacing` : "Arrival, access and servicing to be resolved"], PAGE_WIDTH_DXA, NAVY, { color: WHITE, columnSpan: columnCount })] }),
+    new TableRow({ cantSplit: true, children: [programPlanCell(plan.operations.shelteredBandLabel.toUpperCase(), [`${plan.operations.shelteredBandDepthFt} ft concept depth`], PAGE_WIDTH_DXA, "DDF5F1", { color: "16695F", columnSpan: columnCount })] }),
   ];
-  for (let index = 0; index < plan.zones.length; index += 3) {
-    const group = plan.zones.slice(index, index + 3);
-    rows.push(new TableRow({ cantSplit: true, height: { value: 720, rule: "atLeast" }, children: [
-      ...group.map((zone) => programPlanCell(zone.name.toUpperCase(), [areaAndSize(zone.areaSqFt, zone.widthFt, zone.depthFt), `${zone.level}${zone.side ? ` · ${zone.side} side` : ""} · ${zone.source.replaceAll("-", " ")}`], 3120, zone.role === "primary" ? "E7F1F5" : zone.role === "upper" ? PALE_TEAL : zone.role === "support" ? "EDF0F2" : "EEF7F7")),
-      ...Array.from({ length: 3 - group.length }, () => programPlanCell("PROGRAM TO BE CONFIRMED", ["No additional itemized zone"], 3120, "F5F7F8")),
-    ] }));
+  if (groundZones.length) {
+    rows.push(new TableRow({
+      cantSplit: true,
+      height: { value: 1000, rule: "atLeast" },
+      children: groundZones.map((zone, index) => programPlanCell(
+        zone.name.toUpperCase(),
+        [areaAndSize(zone.areaSqFt, zone.widthFt, zone.depthFt), `${zone.side ? `${zone.side} side · ` : ""}${zone.source.replaceAll("-", " ")}`],
+        columnWidths[index],
+        zone.role === "primary" ? "E7F1F5" : zone.role === "support" ? "EDF0F2" : "EEF7F7",
+      )),
+    }));
   }
-  rows.push(new TableRow({ cantSplit: true, children: [programPlanCell(plan.operations.outdoorZoneLabel.toUpperCase(), [`${plan.operations.outdoorZoneDepthFt} ft concept depth · access and fire verification required`], PAGE_WIDTH_DXA, "F7ECD6", { color: "755622", columnSpan: 3 })] }));
-  rows.push(new TableRow({ cantSplit: true, children: [
-    programPlanCell("PREFERRED ACCESS", [plan.access.preferredRoad], 6240, "F5F7F8", { columnSpan: 2 }),
-    programPlanCell("PARKING", [plan.parking.requiredSpaces ? `${plan.parking.requiredSpaces} required spaces` : "Not specified"], 3120, "F5F7F8"),
-  ] }));
-  return fixedTable(rows, [3120, 3120, 3120]);
+  for (const zone of upperZones) rows.push(new TableRow({
+    cantSplit: true,
+    children: [programPlanCell(
+      `${zone.name.toUpperCase()} — ${zone.level.toUpperCase()}`,
+      [areaAndSize(zone.areaSqFt, zone.widthFt, zone.depthFt), `${zone.side ? `${zone.side} side · ` : ""}${zone.source.replaceAll("-", " ")}`],
+      PAGE_WIDTH_DXA,
+      PALE_TEAL,
+      { columnSpan: columnCount },
+    )],
+  }));
+  rows.push(new TableRow({ cantSplit: true, children: [programPlanCell(plan.operations.outdoorZoneLabel.toUpperCase(), [`${plan.operations.outdoorZoneDepthFt} ft concept depth · access and fire verification required`], PAGE_WIDTH_DXA, "F7ECD6", { color: "755622", columnSpan: columnCount })] }));
+  rows.push(new TableRow({ cantSplit: true, children: [programPlanCell("PREFERRED ACCESS", [plan.access.status === "requirement" ? plan.access.preferredRoad : "Access engineering unconfirmed"], PAGE_WIDTH_DXA, "F5F7F8", { columnSpan: columnCount })] }));
+  rows.push(new TableRow({ cantSplit: true, children: [programPlanCell("PARKING", [plan.parking.requiredSpaces ? `${plan.parking.requiredSpaces}-space preliminary allowance` : "Not specified"], PAGE_WIDTH_DXA, "F5F7F8", { columnSpan: columnCount })] }));
+  return fixedTable(rows, columnWidths);
 }
 
 function callout(children: Paragraph[], fill: string, accent: string): Table {
@@ -350,7 +377,7 @@ function dateLabel(site: SiteContext): string {
   }
 }
 
-function createDocument({ climate, site, requirements, building, trace, assets }: ReportInput): Document {
+function createDocument({ climate, site, requirements, building, trace, assets, siteFitAssessment, selectedSiteFitOptionId }: ReportInput): Document {
   const children: Array<Paragraph | Table> = [];
   const constraints = climate.designBrief.siteWideConstraints;
   const concept = requirements.buildingType || "Not chosen";
@@ -363,12 +390,19 @@ function createDocument({ climate, site, requirements, building, trace, assets }
     aspectRatio: building.aspectRatio,
     orientationLabel: building.orientationLabel,
   }, { officeMezzanineSide: building.intervention?.outcome === "accepted" ? building.intervention.tested?.officeMezzanineSide : building.intervention?.initial.officeMezzanineSide }) : undefined;
+  const displayedChangeSummary = building && programPlan ? presentDesignNarrative(building.changeSummary, programPlan) : undefined;
+  const responseContainsSun = building?.climateResponse?.inputs.some((input) => input.id === "forma-sun" && input.source === "forma") ?? false;
+  const readableClimateResponse = building?.climateResponse && !(responseContainsSun && building.analysisMetricSource !== "ground-grid")
+    ? building.climateResponse
+    : undefined;
+  const selectedSiteFitOption = siteFitAssessment?.options.find((option) => option.id === selectedSiteFitOptionId)
+    ?? siteFitAssessment?.options.find((option) => option.brief.buildingType === requirements.buildingType);
 
   children.push(brandBar(assets));
   children.push(...fullWidthFigure(assets?.mastheadDataUrl, "SiteMorph geospatial intelligence", 150));
   children.push(new Paragraph({ style: "Kicker", children: [run("SITE INTELLIGENCE REPORT", { bold: true, color: TEAL, size: 18 })] }));
   children.push(new Paragraph({ style: "ReportTitle", children: [run("SiteMorph — Site Intelligence & Climate Design Report", { bold: true, color: NAVY, size: 44 })] }));
-  children.push(bodyParagraph("FortyGuard historical evidence + Autodesk Forma design-performance validation", { color: MUTED, italic: true, after: 220 }));
+  children.push(bodyParagraph("FortyGuard historical evidence + Autodesk Forma design-performance analysis", { color: MUTED, italic: true, after: 220 }));
   children.push(callout([
     richParagraph([run(site.projectName, { bold: true, size: 28, color: NAVY })], { after: 70 }),
     richParagraph([run(`${site.location}  |  ${formatNumber(site.areaSqFt)} ft2  |  ${site.areaAcres} acres`, { color: DARK_BLUE })], { after: 70 }),
@@ -384,7 +418,7 @@ function createDocument({ climate, site, requirements, building, trace, assets }
   ], [3600, 5760]));
   children.push(callout([
     richParagraph([run(building ? `Recommendation confidence: ${confidence}` : "Next required action", { bold: true, color: NAVY, size: 24 })], { after: 70 }),
-    bodyParagraph(building ? building.changeSummary : "Generate one building in Forma, run native Sun and Rapid Wind, and export again to complete the spatial design evidence.", { after: 0 }),
+    bodyParagraph(building ? displayedChangeSummary : "Generate one building in Forma, run native Sun and Rapid Wind, and export again to complete the spatial design evidence.", { after: 0 }),
   ], building ? PALE_TEAL : PALE_AMBER, building ? TEAL : "D9951E"));
   children.push(sectionHeading(1, "Site overview", true));
   children.push(labelValueTable([
@@ -454,26 +488,42 @@ function createDocument({ climate, site, requirements, building, trace, assets }
 
   children.push(new Paragraph({ children: [new PageBreak()] }));
   children.push(sectionHeading(5, "What could fit here?"));
-  children.push(bodyParagraph("Preliminary climate-and-area compatibility only. Planning and commercial due diligence remain required.", { color: MUTED, italic: true }));
-  const largeParcel = site.areaSqFt >= 250000;
-  children.push(matrixTable(["Typology", "Preliminary fit", "Reason"], [
-    ["Warehouse / logistics", largeParcel ? "Area-compatible; planning unverified" : "Constrained; planning unverified", "Large-footprint development remains subject to setbacks, access, parking, utilities, zoning and entitlement verification. Site-wide heat requires roof, envelope, yard and worker controls."],
-    ["Cold-chain distribution", largeParcel ? "Area-compatible with climate penalty" : "Constrained", "Historical cooling burden makes resilience, envelope, refrigeration energy and backup strategy critical."],
-    ["Light industrial + office", "Potentially compatible; planning unverified", "Keep occupied program compact and validate sun, wind, daylight, noise, energy and microclimate in Forma."],
-    ["Residential / heat-sensitive outdoor use", "Undetermined", "High hot-season exposure and missing zoning, market, amenity, access and entitlement evidence prevent a responsible recommendation."],
-  ], [2200, 2350, 4810]));
+  children.push(bodyParagraph("Site Fit Advisor is a deterministic, no-paid-AI-API ranking of preliminary physical and climate compatibility. It is not a land-use approval or highest-and-best-use study.", { color: MUTED, italic: true }));
+  if (siteFitAssessment) {
+    children.push(matrixTable(
+      ["Rank", "Typology", "Score", "Status", "Input-specific sizing"],
+      siteFitAssessment.options.map((option) => [
+        option.rank,
+        `${option.label}${option.id === selectedSiteFitOption?.id ? " (selected)" : ""}`,
+        `${option.score} / 100`,
+        option.status.replaceAll("-", " "),
+        option.sizeSummary,
+      ]),
+      [700, 2050, 1150, 1760, 3700],
+    ));
+    if (selectedSiteFitOption) children.push(callout([
+      richParagraph([run("Selected Site Fit Advisor option: ", { bold: true }), run(`${selectedSiteFitOption.label} — score ${selectedSiteFitOption.score} / 100`, { bold: true, color: NAVY })], { after: 70 }),
+      bodyParagraph(`Preliminary parking allowance: ${selectedSiteFitOption.brief.requiredParking} spaces. This is a site-fit planning input, not a code-derived parking requirement.`, { after: 0 }),
+    ], PALE_TEAL, TEAL));
+    children.push(subheading("Missing feasibility evidence"));
+    children.push(...siteFitAssessment.missingEvidence.map(bullet));
+    children.push(bodyParagraph(siteFitAssessment.disclaimer, { color: MUTED, italic: true }));
+  } else {
+    children.push(callout([bodyParagraph("A Site Fit Advisor assessment was not included in this export. Reopen the selected Forma Site Limit and export again to include the input-specific ranked options.", { after: 0 })], PALE_AMBER, "D9951E"));
+  }
 
   children.push(sectionHeading(6, "Generated Forma proposal"));
   if (building) {
     if (programPlan) {
       children.push(subheading("Dimensioned 2D program/site plan"));
       children.push(programPlanTable(programPlan));
+      children.push(bodyParagraph("Ground-program cell widths are proportional to the stated ground areas; printed width × depth dimensions remain the governing concept measurements.", { color: MUTED, italic: true }));
       children.push(labelValueTable([
         ["Building envelope", `${programPlan.buildingWidthFt} ft x ${programPlan.buildingDepthFt} ft`],
         ["Footprint / gross area", `${formatNumber(programPlan.footprintSqFt)} ft2 / ${formatNumber(programPlan.grossFloorAreaSqFt)} ft2`],
         ["Program basis", programPlan.programSummary],
         [programPlan.operations.edgeLabel, programPlan.operations.itemCount ? `${programPlan.operations.itemCount} ${programPlan.operations.itemLabel}${programPlan.operations.itemCount === 1 ? "" : "s"}` : "Access and servicing to be resolved"],
-        ["Sensitive / upper program side", programPlan.officeMezzanineSide],
+        [`${programPlan.interventionProgramLabel} side`, programPlan.officeMezzanineSide],
       ]));
       children.push(callout([bodyParagraph(programPlan.disclaimer, { color: MUTED, italic: true, after: 0 })], PALE_AMBER, "D9951E"));
     }
@@ -491,56 +541,64 @@ function createDocument({ climate, site, requirements, building, trace, assets }
       ["Orientation", building.orientationLabel],
       ["Aspect ratio", `${building.aspectRatio.toFixed(1)}:1`],
       ["Site coverage", `${building.siteCoveragePercent}%`],
-      ["Open site remaining", `${formatNumber(building.remainingSiteAreaSqFt)} ft2`],
+      ["Parcel outside mass", `${formatNumber(building.remainingSiteAreaSqFt)} ft2 gross, before parking, setbacks, access, fire/civil and landscape reservations`],
+      ["Terrain placement", building.placementVerification ? `${building.placementVerification.terrainBaseElevationMeters.toFixed(3)} m base from ${building.placementVerification.terrainSampleCount} real terrain samples` : undefined],
+      ["Persisted XY / Z", building.placementVerification ? `${building.placementVerification.worldTransformXMeters.toFixed(3)}, ${building.placementVerification.worldTransformYMeters.toFixed(3)} / ${building.placementVerification.worldTransformElevationMeters.toFixed(3)} m` : undefined],
+      ["Generated mesh base", building.placementVerification ? `${building.placementVerification.meshBaseElevationMeters.toFixed(3)} m; verified within ${building.placementVerification.toleranceMeters.toFixed(2)} m` : undefined],
     ]));
     children.push(subheading("Program allocation"));
     if (requirements.program.length) children.push(matrixTable(["Program", "Area"], requirements.program.map((item) => [item.name, `${formatNumber(item.areaSqFt)} ft2`]), [6500, 2860]));
     else children.push(bodyParagraph(programPlan?.programSummary ?? "No internal program allocation was supplied for this concept."));
     children.push(subheading("Why this massing was selected"));
-    children.push(bodyParagraph(building.placementSummary));
+    children.push(bodyParagraph(formatInterventionPlacement(building.placementSummary, programPlan!)));
     children.push(subheading("Key climate constraints used"));
     children.push(...constraints.map(bullet));
   } else children.push(callout([bodyParagraph("No generated Forma building was present when this report was exported. Generate and evaluate a building, then export the report again.", { after: 0 })], PALE_AMBER, "D9951E"));
 
-  children.push(sectionHeading(7, "Forma validation"));
+  children.push(sectionHeading(7, "Native Forma analysis"));
   if (building) {
+    const hasGroundGridMetrics = building.analysisMetricSource === "ground-grid";
     children.push(labelValueTable([
-      ["Native Forma Sun status", building.sunStatus === "succeeded" ? "Completed" : building.sunStatus],
-      ["Mean ground sun", building.meanSunHours === undefined ? undefined : `${building.meanSunHours} h`],
-      ["Maximum ground sun", building.maxSunHours === undefined ? undefined : `${building.maxSunHours} h`],
-      ["Metric source", building.analysisMetricSource === "ground-grid" ? "Forma ground-grid output" : "Native completion status only"],
+      ["Native Forma Sun status", building.sunStatus === "succeeded" ? (hasGroundGridMetrics ? "Completed with readable ground grid" : "Native job completed; embedded ground grid unavailable") : building.sunStatus],
+      ["Mean ground sun", hasGroundGridMetrics && building.meanSunHours !== undefined ? `${building.meanSunHours} h` : undefined],
+      ["Maximum ground sun", hasGroundGridMetrics && building.maxSunHours !== undefined ? `${building.maxSunHours} h` : undefined],
+      ["Metric source", hasGroundGridMetrics ? "Forma ground-grid output" : "Native completion status only; not treated as measured validation"],
     ]));
     if (building.analysisNote) children.push(callout([bodyParagraph(building.analysisNote, { after: 0 })], PALE_AMBER, "D9951E"));
-    if (building.climateResponse) {
-      children.push(subheading(building.climateResponse.label));
+    if (readableClimateResponse) {
+      children.push(subheading(readableClimateResponse.label));
       children.push(labelValueTable([
-        ["Status", building.climateResponse.status],
-        ["Mean response index", `${building.climateResponse.meanRiskScore} / 100`],
-        ["Maximum response index", `${building.climateResponse.maximumRiskScore} / 100`],
-        ["Spatial resolution", `${building.climateResponse.resolutionMeters} m`],
-        ["FortyGuard historical baseline", `${building.climateResponse.historicalBaselineScore} / 100`],
+        ["Status", readableClimateResponse.status],
+        ["Mean response index", `${readableClimateResponse.meanRiskScore} / 100`],
+        ["Maximum response index", `${readableClimateResponse.maximumRiskScore} / 100`],
+        ["Spatial resolution", `${readableClimateResponse.resolutionMeters} m`],
+        ["FortyGuard historical baseline", `${readableClimateResponse.historicalBaselineScore} / 100`],
       ]));
-      children.push(matrixTable(["Input", "Source", "Weight", "Coverage"], building.climateResponse.inputs.map((input) => [input.label, input.source, `${input.configuredWeightPercent}%`, `${input.coveragePercent}%`]), [3850, 1800, 1650, 2060]));
-      children.push(callout([bodyParagraph(building.climateResponse.formula, { bold: true, after: 70 }), bodyParagraph(building.climateResponse.note, { color: MUTED, italic: true, after: 0 })], PALE_TEAL, TEAL));
+      children.push(matrixTable(["Input", "Source", "Weight", "Coverage"], readableClimateResponse.inputs.map((input) => [input.label, input.source, `${input.configuredWeightPercent}%`, `${input.coveragePercent}%`]), [3850, 1800, 1650, 2060]));
+      children.push(callout([bodyParagraph(readableClimateResponse.formula, { bold: true, after: 70 }), bodyParagraph(readableClimateResponse.note, { color: MUTED, italic: true, after: 0 })], PALE_TEAL, TEAL));
+    } else if (building.climateResponse) {
+      children.push(callout([bodyParagraph("The combined response index was omitted. The embedded Sun ground grid was rejected or unreadable, so no stale or unsupported Sun-derived response was used.", { after: 0 })], PALE_AMBER, "D9951E"));
     }
     children.push(bodyParagraph("Microclimate, energy, daylight, noise and carbon remain recommended native Forma validations. SiteMorph does not claim results that were not run or readable."));
   } else children.push(bodyParagraph("Forma validation will appear after a building is generated."));
 
   children.push(sectionHeading(8, "SiteMorph revision", Boolean(building)));
   if (building) {
+    const initialDecisionPlan = building.intervention?.initial.programPlan ?? programPlan!;
+    const testedDecisionPlan = building.intervention?.tested?.programPlan ?? programPlan!;
     const interventionPair = evidencePair([
-      { source: building.initialDesignImageDataUrl, caption: building.intervention ? `Initial mass - ${building.intervention.initial.aspectRatio}:1 - ${building.intervention.initial.placement}` : "Initial mass" },
-      { source: building.testedDesignImageDataUrl, caption: building.intervention?.tested ? `Tested intervention - ${building.intervention.tested.aspectRatio}:1 - ${building.intervention.tested.placement}` : "Tested intervention" },
+      { source: building.initialDesignImageDataUrl, caption: building.intervention ? `Initial mass - ${building.intervention.initial.aspectRatio}:1 - ${formatInterventionPlacement(building.intervention.initial.placement, initialDecisionPlan)}` : "Initial mass" },
+      { source: building.testedDesignImageDataUrl, caption: building.intervention?.tested ? `Tested intervention - ${building.intervention.tested.aspectRatio}:1 - ${formatInterventionPlacement(building.intervention.tested.placement, testedDecisionPlan)}` : "Tested intervention" },
     ]);
     if (interventionPair) children.push(interventionPair);
     if (building.intervention) children.push(labelValueTable([
       ["Detected issue", building.intervention.issue],
-      ["Action tested", building.intervention.action],
+      ["Action tested", presentDesignNarrative(building.intervention.action, testedDecisionPlan)],
       ["Acceptance rule", building.intervention.objective],
       ["Decision", building.intervention.outcome.toUpperCase()],
       ["Aspect ratio", building.intervention.tested ? `${building.intervention.initial.aspectRatio}:1 to ${building.intervention.tested.aspectRatio}:1` : `${building.intervention.initial.aspectRatio}:1`],
-      ["Placement", building.intervention.tested ? `${building.intervention.initial.placement} to ${building.intervention.tested.placement}` : building.intervention.initial.placement],
-      ["Sensitive / upper program side", building.intervention.tested ? `${building.intervention.initial.officeMezzanineSide} to ${building.intervention.tested.officeMezzanineSide}` : building.intervention.initial.officeMezzanineSide],
+      ["Placement", building.intervention.tested ? `${formatInterventionPlacement(building.intervention.initial.placement, initialDecisionPlan)} to ${formatInterventionPlacement(building.intervention.tested.placement, testedDecisionPlan)}` : formatInterventionPlacement(building.intervention.initial.placement, initialDecisionPlan)],
+      [`${testedDecisionPlan.interventionProgramLabel} side`, building.intervention.tested ? `${building.intervention.initial.officeMezzanineSide} to ${building.intervention.tested.officeMezzanineSide}` : building.intervention.initial.officeMezzanineSide],
       ["Mean ground sun", building.intervention.tested && building.intervention.initial.meanSunHours !== undefined && building.intervention.tested.meanSunHours !== undefined ? `${building.intervention.initial.meanSunHours} h to ${building.intervention.tested.meanSunHours} h` : undefined],
       ["Maximum ground sun", building.intervention.tested && building.intervention.initial.maxSunHours !== undefined && building.intervention.tested.maxSunHours !== undefined ? `${building.intervention.initial.maxSunHours} h to ${building.intervention.tested.maxSunHours} h` : undefined],
     ]));
@@ -548,14 +606,14 @@ function createDocument({ climate, site, requirements, building, trace, assets }
       ["2D plan decision", "Initial", "Tested"],
       [
         ["Building envelope", `${building.intervention.initial.programPlan.buildingWidthFt} ft x ${building.intervention.initial.programPlan.buildingDepthFt} ft`, `${building.intervention.tested.programPlan.buildingWidthFt} ft x ${building.intervention.tested.programPlan.buildingDepthFt} ft`],
-        ["Sensitive / upper program", building.intervention.initial.programPlan.officeMezzanineSide, building.intervention.tested.programPlan.officeMezzanineSide],
+        [testedDecisionPlan.interventionProgramLabel, building.intervention.initial.programPlan.officeMezzanineSide, building.intervention.tested.programPlan.officeMezzanineSide],
         ["Operations edge", building.intervention.initial.programPlan.operations.edgeLabel, building.intervention.tested.programPlan.operations.edgeLabel],
-        ["Visible climate response", "North-side upper/sensitive program", "Sensitive program moved east; west heat buffer retained"],
+        ["Visible climate response", `North-side ${initialDecisionPlan.interventionProgramLabel.toLowerCase()}`, `${testedDecisionPlan.interventionProgramLabel} shown east; west heat buffer retained`],
       ],
       [3000, 3180, 3180],
     ));
     const outcome = building.intervention?.outcome === "accepted" ? "Accepted measured change" : building.intervention?.outcome === "rejected" ? "Rejected; initial design restored" : "Initial design retained";
-    children.push(callout([richParagraph([run(`Initial design -> Forma Sun -> tested intervention -> ${outcome}`, { bold: true, color: NAVY, size: 24 })], { after: 70 }), bodyParagraph(building.changeSummary, { after: 0 })], building.intervention?.outcome === "rejected" ? PALE_AMBER : PALE_TEAL, building.intervention?.outcome === "rejected" ? "D9951E" : TEAL));
+    children.push(callout([richParagraph([run(`Initial design -> Forma Sun -> tested intervention -> ${outcome}`, { bold: true, color: NAVY, size: 24 })], { after: 70 }), bodyParagraph(displayedChangeSummary, { after: 0 })], building.intervention?.outcome === "rejected" ? PALE_AMBER : PALE_TEAL, building.intervention?.outcome === "rejected" ? "D9951E" : TEAL));
   } else children.push(bodyParagraph("No autonomous geometry revision has been completed."));
 
   children.push(sectionHeading(9, "SiteMorph Recommendation"));
@@ -565,8 +623,8 @@ function createDocument({ climate, site, requirements, building, trace, assets }
     richParagraph([run("Confidence: ", { bold: true }), run(confidence)], { after: 60 }),
     richParagraph([run("Primary constraint: ", { bold: true }), run("Persistent hot-season thermal load")], { after: 60 }),
     richParagraph([run("Design response: ", { bold: true }), run(designResponse)], { after: 60 }),
-    richParagraph([run("Forma-validated proposal: ", { bold: true }), run(`SiteMorph Design R${building.revision}`)], { after: 60 }),
-    richParagraph([run("Reason selected: ", { bold: true }), run(building.changeSummary)], { after: 0 }),
+    richParagraph([run(building.analysisMetricSource === "ground-grid" ? "Forma ground-grid measured proposal: " : "Forma proposal analysis status: ", { bold: true }), run(building.analysisMetricSource === "ground-grid" ? `SiteMorph Design R${building.revision}` : `SiteMorph Design R${building.revision}; native Sun job completed, readable ground-grid metrics unavailable`)], { after: 60 }),
+    richParagraph([run("Reason selected: ", { bold: true }), run(displayedChangeSummary)], { after: 0 }),
   ] : [
     richParagraph([run("Complete the generated Forma proposal before a design recommendation", { bold: true, color: NAVY, size: 26 })], { after: 100 }),
     richParagraph([run("Confidence: ", { bold: true }), run(confidence)], { after: 60 }),
@@ -574,13 +632,32 @@ function createDocument({ climate, site, requirements, building, trace, assets }
     richParagraph([run("Next decision: ", { bold: true }), run("Generate, analyze and revise one requirements-driven building.")], { after: 0 }),
   ], PALE_TEAL, TEAL));
 
-  children.push(sectionHeading(10, "Evidence trail", Boolean(building)));
+  children.push(sectionHeading(10, "Revit handoff"));
+  if (building) {
+    children.push(labelValueTable([
+      ["Native transfer source", "Persisted Autodesk Forma proposal floor stack"],
+      ["SiteMorph element", building.elementPath],
+      ["Placement preflight", building.placementVerification ? `Verified X, Y, terrain Z and generated mesh Z within ${building.placementVerification.toleranceMeters.toFixed(2)} m` : "Run Prepare Forma Proposal for Revit before transfer"],
+      ["Start in Revit", "Open a new blank Revit file for this proposal transfer"],
+      ["Transfer command", "Forma Proposals menu -> Revit -> Send to Revit add-in (Beta)"],
+      ["Revit receive step", "Run Load From Forma once in the Autodesk Revit add-in"],
+      ["Repeated loads", "Repeated Load From Forma into the same Revit file is unsupported; use a fresh blank file for another load"],
+      ["Existing Revit model", "Load the Forma proposal into a blank wrapper file, then Link Revit into the existing model and Bind Link only when appropriate"],
+      ["Embedded-extension limit", "SiteMorph can prepare, verify and highlight the proposal but cannot invoke the Forma host menu"],
+    ]));
+    children.push(callout([
+      bodyParagraph("SiteMorph design-evidence JSON is an optional audit sidecar; Revit does not natively import it. The optional OBJ is generic concept geometry only and is not native BIM walls, floors, rooms, roofs or openings.", { after: 70 }),
+      bodyParagraph("The dimensioned 2D program plan and terrain concept overlay communicate intent. The persisted Forma floor stack is the actual native transfer geometry.", { color: MUTED, italic: true, after: 0 }),
+    ], PALE_AMBER, "D9951E"));
+  } else children.push(bodyParagraph("Generate a Forma proposal before starting the native Revit add-in handoff."));
+
+  children.push(sectionHeading(11, "Evidence trail", Boolean(building)));
   children.push(subheading("FortyGuard heat activities"));
   const heatRows = climate.activityIds?.heat.length ? climate.activityIds.heat.map((sample) => [sample.date, sample.tcm, sample.persistence, sample.exceedance, sample.timeOfMeasure]) : [["Primary", climate.activityId, "", "", ""]];
   children.push(matrixTable(["Date", "TCM", "Persistence", "Exceedance", "Peak time"], heatRows, [1200, 2040, 2040, 2040, 2040]));
 
   const optionalActivities = [["Environmental parameters", climate.activityIds?.environmental], ["Satellite segmentation", climate.activityIds?.satellite], ["Street segmentation", climate.activityIds?.street]].filter((item): item is [string, string] => Boolean(item[1]));
-  const formaInputs = building ? [...building.sunAnalysisIds.map((id, index) => [`Forma Sun ${index + 1}`, id] as const), ...(building.climateResponse?.inputs.filter((input) => input.analysisId && !building.sunAnalysisIds.includes(input.analysisId)).map((input) => [input.label, input.analysisId!] as const) ?? [])] : [];
+  const formaInputs = building ? [...building.sunAnalysisIds.map((id, index) => [`Forma Sun ${index + 1}`, id] as const), ...(readableClimateResponse?.inputs.filter((input) => input.analysisId && !building.sunAnalysisIds.includes(input.analysisId)).map((input) => [input.label, input.analysisId!] as const) ?? [])] : [];
   const decisions = trace.filter((event) => event.type === "Decision" || event.type === "Recommendation");
   if (building) {
     children.push(subheading("FortyGuard site-context activities"));
@@ -590,7 +667,7 @@ function createDocument({ climate, site, requirements, building, trace, assets }
     if (formaInputs.length) children.push(...formaInputs.map(([label, id]) => richParagraph([run(`${label}: `, { bold: true }), run(id, { font: "Consolas", size: 17 })])));
     else children.push(bullet("No Forma analysis IDs recorded."));
     children.push(subheading("SiteMorph-derived decisions"));
-    if (decisions.length) children.push(...decisions.map((event) => richParagraph([run(`${event.title}: `, { bold: true }), run(event.detail ?? event.reason ?? "Recorded in the SiteMorph trace")])));
+    if (decisions.length) children.push(...decisions.map((event) => richParagraph([run(`${event.title}: `, { bold: true }), run(programPlan ? presentDesignNarrative(event.detail ?? event.reason ?? "Recorded in the SiteMorph trace", programPlan) : event.detail ?? event.reason ?? "Recorded in the SiteMorph trace")])));
     else children.push(bullet("See the Climate Design Brief and revision decision above."));
   } else {
     const siteContext = optionalActivities.length
@@ -613,7 +690,7 @@ function createDocument({ climate, site, requirements, building, trace, assets }
   return new Document({
     creator: "SiteMorph",
     title: "SiteMorph — Site Intelligence & Climate Design Report",
-    description: "Evidence-to-design report combining FortyGuard historical context with Autodesk Forma validation.",
+    description: "Evidence-to-design report combining FortyGuard historical context with Autodesk Forma analysis.",
     styles: {
       default: { document: { run: { font: "Calibri", size: 22, color: INK }, paragraph: { spacing: { after: 120, line: 264, lineRule: "auto" } } } },
       paragraphStyles: [

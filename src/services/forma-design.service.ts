@@ -1,4 +1,4 @@
-import type { ClimateDNA, DesignBrief, DesignInterventionSnapshot, GeneratedBuilding, SiteGeometry } from "../types";
+import type { ClimateDNA, DesignBrief, DesignInterventionSnapshot, FormaPlacementVerification, GeneratedBuilding, SiteGeometry } from "../types";
 import { delay } from "../utils/config";
 import { evaluateSunIntervention } from "../utils/design-intervention";
 import { resolveBuildingProgram } from "../utils/design-program";
@@ -6,9 +6,18 @@ import { boundsOverlap, pointInPolygon, polygonBounds } from "../utils/geometry-
 import { createProgramPlan } from "../utils/program-plan";
 import { detectBuildingTypology } from "../utils/program-typology";
 import { decodeSunGroundGrid } from "../utils/sun-grid";
-import { resolveTerrainBaseElevation } from "../utils/terrain-elevation";
+import { sampleTerrainBaseElevation } from "../utils/terrain-elevation";
 import { createSiteLayoutPlan } from "../utils/site-layout";
 import { resolveFormaElementFootprint } from "./forma-element-footprint.service";
+import {
+  isPathWithinOwnedRoot,
+  listSiteMorphOwnedRootPaths,
+  removeOtherSiteMorphOwnedRoots,
+  rollbackSiteMorphOwnedRoot,
+  SITEMORPH_ELEMENT_NAME_PREFIX,
+  tagSiteMorphElementUrn,
+  verifyPersistedFormaElementPlacement,
+} from "./forma-element-placement.service";
 import { renderSiteLayoutOverlay } from "./forma-site-layout-overlay.service";
 import { getFormaClient } from "./forma.service";
 
@@ -27,6 +36,8 @@ interface MassDefinition {
   heightFt: number;
   heightMeters: number;
   baseElevationMeters: number;
+  terrainSampleCount: number;
+  placementVerification?: FormaPlacementVerification;
   aspectRatio: number;
   projectFootprint: Array<[number, number]>;
   placementSummary: string;
@@ -37,23 +48,23 @@ interface MassDefinition {
 
 interface MassStrategy {
   aspectRatio: number;
-  placement: "balanced" | "north-west-access";
+  placement: "balanced" | "north-west-concept";
   mezzanineSide: "north" | "east";
-  loadingYardSide: "North access edge";
+  loadingYardSide: "North concept edge";
 }
 
 const INITIAL_STRATEGY: MassStrategy = {
   aspectRatio: 1.6,
   placement: "balanced",
   mezzanineSide: "north",
-  loadingYardSide: "North access edge",
+  loadingYardSide: "North concept edge",
 };
 
 const THERMAL_REVISION_STRATEGY: MassStrategy = {
   aspectRatio: 2.2,
-  placement: "north-west-access",
+  placement: "north-west-concept",
   mezzanineSide: "east",
-  loadingYardSide: "North access edge",
+  loadingYardSide: "North concept edge",
 };
 
 interface SunResult {
@@ -103,7 +114,7 @@ function choosePlacement(
       const obstacleDistance = obstacleBounds.length ? Math.min(...obstacleBounds.map((obstacle) => Math.hypot(centerX - obstacle.centerX, centerY - obstacle.centerY))) : 0;
       const accessDistance = site.maxY - (centerY + depth / 2);
       const westEdgeDistance = centerX - width / 2 - site.minX;
-      const score = strategy === "north-west-access"
+      const score = strategy === "north-west-concept"
         ? obstacleDistance - accessDistance * 1.1 - westEdgeDistance * 0.25
         : obstacleDistance - distanceFromCenter * 0.2;
       candidates.push({ centerX, centerY, score });
@@ -114,7 +125,7 @@ function choosePlacement(
   return {
     centerX: selected.centerX,
     centerY: selected.centerY,
-    summary: `${strategy === "north-west-access" ? "Access-aligned north-west placement" : "Balanced placement"} selected after testing ${candidates.length} viable positions${obstacleBounds.length ? ` against ${obstacleBounds.length} existing building footprint${obstacleBounds.length === 1 ? "" : "s"}` : "; no readable existing-building footprints were returned"}.`,
+    summary: `${strategy === "north-west-concept" ? "North-west concept placement (access engineering unconfirmed)" : "Balanced placement"} selected after testing ${candidates.length} viable positions${obstacleBounds.length ? ` against ${obstacleBounds.length} existing building footprint${obstacleBounds.length === 1 ? "" : "s"}` : "; no readable existing-building footprints were returned"}.`,
   };
 }
 
@@ -183,10 +194,11 @@ function makeMass(brief: DesignBrief, geometry: SiteGeometry, strategy: MassStra
     heightFt: totalHeightFt,
     heightMeters: totalHeightFt / FEET_PER_METER,
     baseElevationMeters: 0,
+    terrainSampleCount: 0,
     aspectRatio: strategy.aspectRatio,
     projectFootprint,
     placementSummary: placement.summary,
-    placementLabel: strategy.placement === "north-west-access" ? "North-west, access aligned" : "Balanced within Site Limit",
+    placementLabel: strategy.placement === "north-west-concept" ? "North-west concept placement · access unconfirmed" : "Balanced within Site Limit",
     loadingYardSide: strategy.loadingYardSide,
     officeMezzanineSide: strategy.mezzanineSide === "east" ? "East side" : "North strip",
   };
@@ -194,22 +206,21 @@ function makeMass(brief: DesignBrief, geometry: SiteGeometry, strategy: MassStra
 
 async function placeMassOnTerrain(
   Forma: Awaited<ReturnType<typeof getFormaClient>>,
-  geometry: SiteGeometry,
   mass: MassDefinition,
 ): Promise<void> {
-  const fallback = geometry.terrainElevationMeters ?? 0;
-  const elevation = await resolveTerrainBaseElevation(
+  const terrain = await sampleTerrainBaseElevation(
     mass.projectFootprint,
     ([x, y]) => Forma.terrain.getElevationAt({ x, y }),
-    fallback,
   );
-  mass.baseElevationMeters = elevation;
-  mass.transform[14] = elevation;
+  mass.baseElevationMeters = terrain.elevationMeters;
+  mass.terrainSampleCount = terrain.successfulSampleCount;
+  mass.transform[14] = terrain.elevationMeters;
 }
 
 function programPlanForMass(brief: DesignBrief, mass: MassDefinition) {
   const profile = detectBuildingTypology(brief.buildingType);
   const itemDescription = mass.loadingYardSide.toLowerCase();
+  const interventionProgramLabel = mass.upperFloorAreaSqFt > 0 ? profile.upperLevelLabel : profile.occupiedProgramLabel;
   return createProgramPlan(brief, {
     footprintSqFt: mass.footprintSqFt,
     grossFloorAreaSqFt: mass.grossFloorAreaSqFt,
@@ -221,7 +232,7 @@ function programPlanForMass(brief: DesignBrief, mass: MassDefinition) {
     officeMezzanineSide: mass.officeMezzanineSide,
     climateMoves: [
       `Keep ${brief.loadingDocks > 0 ? `${brief.loadingDocks} ${profile.operations.itemLabel.toLowerCase()}${brief.loadingDocks === 1 ? "" : "s"}` : profile.operations.edgeLabel.toLowerCase()} and sheltered outdoor operations on the ${itemDescription}.`,
-      `Place heat-sensitive ${profile.upperLevelLabel.toLowerCase()} program on the ${mass.officeMezzanineSide.toLowerCase()}.`,
+      `Place the most heat-sensitive ${interventionProgramLabel.toLowerCase()} on the ${mass.officeMezzanineSide.toLowerCase()}.`,
       "Use the west edge as a heat-buffer and envelope-performance priority.",
     ],
   });
@@ -320,14 +331,27 @@ async function addValidatedMass(
   name: string,
   boundary: Array<[number, number]>,
 ): Promise<{ path: string; footprint: Array<[number, number]> }> {
-  const added = await Forma.proposal.addElement({ urn, transform: mass.transform, name });
-  await Forma.proposal.awaitProposalPersisted();
+  const ownedUrn = await tagSiteMorphElementUrn(Forma, urn);
+  const added = await Forma.proposal.addElement({ urn: ownedUrn, transform: mass.transform, name });
   try {
+    await Forma.proposal.awaitProposalPersisted();
+    mass.placementVerification = await verifyPersistedFormaElementPlacement(Forma, added.path, {
+      terrainBaseElevationMeters: mass.baseElevationMeters,
+      terrainSampleCount: mass.terrainSampleCount,
+      expectedCenterXMeters: mass.transform[12],
+      expectedCenterYMeters: mass.transform[13],
+    });
     const resolved = await resolveFormaElementFootprint(Forma, added.path, mass.projectFootprint, boundary);
+    await removeOtherSiteMorphOwnedRoots(Forma, added.path);
     return { path: added.path, footprint: resolved.coordinates };
   } catch (error) {
-    await Forma.proposal.removeElement({ path: added.path }).catch(() => undefined);
-    await Forma.proposal.awaitProposalPersisted().catch(() => undefined);
+    try {
+      await rollbackSiteMorphOwnedRoot(Forma, added.path);
+    } catch (rollbackError) {
+      const generationDetail = error instanceof Error ? error.message : "unknown generation error";
+      const rollbackDetail = rollbackError instanceof Error ? rollbackError.message : "unknown rollback error";
+      throw new Error(`SiteMorph generation failed (${generationDetail}) and proposal cleanup also failed (${rollbackDetail})`);
+    }
     throw error;
   }
 }
@@ -365,7 +389,7 @@ class FormaDesignService {
     brief: DesignBrief,
     geometry: SiteGeometry,
     climate: ClimateDNA,
-    existingPath?: string,
+    _existingPath?: string,
   ): Promise<GeneratedBuilding> {
     if (!brief.buildingType.trim()) throw new Error("Enter a building type before generation.");
     if (brief.totalAreaSqFt <= 0 && brief.targetFootprintSqFt <= 0) throw new Error("Enter a positive building area before generation.");
@@ -377,24 +401,24 @@ class FormaDesignService {
     const siteBoundary = geometry.localBoundary;
     if (!siteBoundary?.length) throw new Error("The selected Forma Site Limit has no local boundary for building placement.");
 
+    const ownedRootPaths = await listSiteMorphOwnedRootPaths(Forma);
     const categoryPaths = await Promise.all([
       Forma.geometry.getPathsByCategory({ category: "building" }).catch(() => []),
       Forma.geometry.getPathsByCategory({ category: "buildings" }).catch(() => []),
     ]);
-    const existingBuildingPaths = [...new Set(categoryPaths.flat())].filter((path) => path !== existingPath);
+    const existingBuildingPaths = [...new Set(categoryPaths.flat())]
+      .filter((path) => !isPathWithinOwnedRoot(path, ownedRootPaths));
     const obstacleFootprints = (await Promise.all(existingBuildingPaths.map((path) => Forma.geometry.getFootprint({ path }).catch(() => undefined))))
       .filter((footprint): footprint is NonNullable<typeof footprint> => Boolean(footprint?.coordinates?.length))
       .map((footprint) => footprint.coordinates.map(([x, y]) => [x, y] as [number, number]))
       .filter((footprint) => boundsOverlap(polygonBounds(footprint), polygonBounds(siteBoundary), 20));
 
     const initial = makeMass(brief, geometry, INITIAL_STRATEGY, obstacleFootprints);
-    await placeMassOnTerrain(Forma, geometry, initial);
+    await placeMassOnTerrain(Forma, initial);
     const initialElement = await Forma.elements.floorStack.createFromFloors({ floors: initial.floors });
-    const addedInitial = await addValidatedMass(Forma, initialElement.urn, initial, `SiteMorph — ${brief.buildingType}`, siteBoundary);
+    const addedInitial = await addValidatedMass(Forma, initialElement.urn, initial, `${SITEMORPH_ELEMENT_NAME_PREFIX} ${brief.buildingType}`, siteBoundary);
     initial.projectFootprint = addedInitial.footprint;
     let elementPath = addedInitial.path;
-    if (existingPath) await Forma.proposal.removeElement({ path: existingPath });
-    await Forma.proposal.awaitProposalPersisted();
 
     // The Site Limit must be the analysis area. Selecting only the generated
     // building creates a geometry result with no ground-grid texture to read.
@@ -429,6 +453,7 @@ class FormaDesignService {
         orientationLabel: "East–west long axis",
         heightMeters: initial.heightMeters,
         baseElevationMeters: initial.baseElevationMeters,
+        placementVerification: initial.placementVerification,
         projectFootprint: initial.projectFootprint,
         placementSummary: initial.placementSummary,
         programPlan: programPlanForMass(brief, initial),
@@ -449,34 +474,33 @@ class FormaDesignService {
     // Test a visible, evidence-driven intervention while preserving gross area,
     // footprint, north access and existing-building clearances.
     const revised = makeMass(brief, geometry, THERMAL_REVISION_STRATEGY, obstacleFootprints);
-    await placeMassOnTerrain(Forma, geometry, revised);
+    await placeMassOnTerrain(Forma, revised);
     const revisedElement = await Forma.elements.floorStack.createFromFloors({ floors: revised.floors });
-    const addedRevised = await addValidatedMass(Forma, revisedElement.urn, revised, `SiteMorph — ${brief.buildingType} · revised`, siteBoundary);
+    const addedRevised = await addValidatedMass(Forma, revisedElement.urn, revised, `${SITEMORPH_ELEMENT_NAME_PREFIX} ${brief.buildingType} · revised`, siteBoundary);
     revised.projectFootprint = addedRevised.footprint;
-    await Forma.proposal.removeElement({ path: elementPath });
     elementPath = addedRevised.path;
-    await Forma.proposal.awaitProposalPersisted();
     const revisedAnalysis = await Forma.analysis.triggerSun({ selectedElementPaths: [geometry.elementPath], month: 6, date: 21 });
     const revisedSun = await waitForSunAnalysis(Forma, revisedAnalysis.analysisId);
     const testedDesignImageDataUrl = await captureDesignImage(Forma, revised);
     const decision = evaluateSunIntervention(firstSun, revisedSun);
+    const revisedProgramPlan = programPlanForMass(brief, revised);
+    const interventionProgramLabel = revisedProgramPlan.interventionProgramLabel.toLowerCase();
+    const testedMassDescription = "2.2:1 north-west concept mass (access engineering unconfirmed)";
     let finalMass = revised;
     let finalSun = revisedSun;
     let changeSummary: string;
     if (!decision.accepted) {
-      const restored = await addValidatedMass(Forma, initialElement.urn, initial, `SiteMorph — ${brief.buildingType} · retained initial`, siteBoundary);
+      const restored = await addValidatedMass(Forma, initialElement.urn, initial, `${SITEMORPH_ELEMENT_NAME_PREFIX} ${brief.buildingType} · retained initial`, siteBoundary);
       initial.projectFootprint = restored.footprint;
-      await Forma.proposal.removeElement({ path: elementPath });
       elementPath = restored.path;
-      await Forma.proposal.awaitProposalPersisted();
       finalMass = initial;
       finalSun = firstSun;
       changeSummary = decision.reason === "metrics-unavailable"
-        ? "SiteMorph tested a 2.2:1 access-aligned mass with the sensitive upper program moved east, but the embedded Forma result exposed no validated ground metrics. The agent rejected the unverified intervention and restored the initial design."
-        : `SiteMorph tested a 2.2:1 access-aligned mass with the sensitive upper program moved east. Forma measured ${revisedSun.meanHours} h mean ground sun versus ${firstSun.meanHours} h initially (${decision.meanDeltaHours ?? 0} h reduction), below the required 0.1 h improvement, so the agent rejected the intervention and restored the initial design.`;
+        ? `SiteMorph tested a ${testedMassDescription} with the ${interventionProgramLabel} shown east, but the embedded Forma result exposed no validated ground metrics. The agent rejected the unverified intervention and restored the initial design.`
+        : `SiteMorph tested a ${testedMassDescription} with the ${interventionProgramLabel} shown east. Forma measured ${revisedSun.meanHours} h mean ground sun versus ${firstSun.meanHours} h initially (${decision.meanDeltaHours ?? 0} h reduction), below the required 0.1 h improvement, so the agent rejected the intervention and restored the initial design.`;
     } else {
       const improvedMetric = decision.reason === "peak-improved" ? "maximum ground sun" : "mean ground sun";
-      changeSummary = `SiteMorph tested a 2.2:1 access-aligned mass with the sensitive upper program moved east. Forma improved ${improvedMetric}; mean ground sun changed from ${firstSun.meanHours} h to ${revisedSun.meanHours} h. The agent accepted the measured intervention.`;
+      changeSummary = `SiteMorph tested a ${testedMassDescription} with the ${interventionProgramLabel} shown east. Forma improved ${improvedMetric}; mean ground sun changed from ${firstSun.meanHours} h to ${revisedSun.meanHours} h. The agent accepted the measured intervention.`;
     }
     const designImageDataUrl = decision.accepted ? testedDesignImageDataUrl : initialDesignImageDataUrl;
     return attachSiteLayout(Forma, brief, geometry, finalMass, {
@@ -505,6 +529,7 @@ class FormaDesignService {
       orientationLabel: "East–west long axis",
       heightMeters: finalMass.heightMeters,
       baseElevationMeters: finalMass.baseElevationMeters,
+      placementVerification: finalMass.placementVerification,
       projectFootprint: finalMass.projectFootprint,
       placementSummary: finalMass.placementSummary,
       programPlan: programPlanForMass(brief, finalMass),
@@ -514,7 +539,7 @@ class FormaDesignService {
       sunAnalysisIds: [firstSun.analysisId, revisedSun.analysisId],
       intervention: {
         issue: `Persistent hot-season thermal load (${climate.thermal.longestPersistenceHours} h maximum continuous persistence) makes exposed operational areas and west-facing program a design risk.`,
-        action: "Test a longer east–west mass, move it toward the north-west access edge, and relocate the sensitive upper program to the east side while preserving the north operations edge.",
+        action: `Test a longer east–west mass at a north-west concept position, show the ${revisedProgramPlan.interventionProgramLabel.toLowerCase()} on the east side, and preserve the north concept operations edge. Access engineering remains unconfirmed.`,
         objective: "Reduce Forma mean ground sun by at least 0.1 h, or reduce peak ground sun by at least 0.2 h without increasing the mean.",
         outcome: decision.accepted ? "accepted" : "rejected",
         reason: changeSummary,

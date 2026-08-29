@@ -14,6 +14,7 @@ export interface OverlayState {
 export interface FormaOverlayServiceContract {
   setAnalysisResult(result: SiteAnalysisResponse, geometry: SiteGeometry): void;
   setClimateResponse(result: ClimateResponseResult, geometry: SiteGeometry): void;
+  clearClimateResponse(): void;
   addHeatLayer(layer: ClimateLayerId): Promise<OverlayState>;
   addPersistenceLayer(): Promise<OverlayState>;
   addVegetationLayer(): Promise<OverlayState>;
@@ -356,6 +357,10 @@ class FormaOverlayService implements FormaOverlayServiceContract {
   setClimateResponse(result: ClimateResponseResult, geometry: SiteGeometry): void {
     this.climateResponse = result;
     this.geometry = geometry;
+  }
+
+  clearClimateResponse(): void {
+    this.climateResponse = null;
   }
 
   async addHeatLayer(layer: ClimateLayerId): Promise<OverlayState> {

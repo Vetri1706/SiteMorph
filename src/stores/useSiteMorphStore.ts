@@ -578,6 +578,8 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
         resolvedBuilding = { ...generatedBuilding, climateResponse: climateResponse.summary };
       } catch (error) {
         climateResponseError = error instanceof Error ? error.message : "Hybrid Climate Response could not be resolved";
+        formaOverlayService.clearClimateResponse();
+        if (get().activeLayer === "climate-response") await formaOverlayService.clearLayers().catch(() => undefined);
       }
       const sunDetail = resolvedBuilding.maxSunHours === undefined
         ? "Native Sun job completed · ground-grid metrics unavailable through the embedded SDK"
@@ -585,7 +587,7 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
       set((state) => ({
         generatedBuilding: resolvedBuilding,
         buildingStatus: "completed",
-        climateDNA: resolvedBuilding.climateResponse && state.climateDNA ? {
+        climateDNA: !state.climateDNA ? state.climateDNA : resolvedBuilding.climateResponse ? {
           ...state.climateDNA,
           layers: [
             {
@@ -608,9 +610,13 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
               derivedFrom: resolvedBuilding.climateResponse.inputs.map((input) => input.label),
             },
           },
-        } : state.climateDNA,
-        activeLayer: resolvedBuilding.climateResponse ? "climate-response" : state.activeLayer,
-        overlayVisible: resolvedBuilding.climateResponse ? true : state.overlayVisible,
+        } : {
+          ...state.climateDNA,
+          layers: state.climateDNA.layers.filter((layer) => layer.id !== "climate-response"),
+          provenance: { ...state.climateDNA.provenance, response: undefined },
+        },
+        activeLayer: resolvedBuilding.climateResponse ? "climate-response" : state.activeLayer === "climate-response" ? null : state.activeLayer,
+        overlayVisible: resolvedBuilding.climateResponse ? true : state.activeLayer === "climate-response" ? false : state.overlayVisible,
         agentTrace: [
           ...state.agentTrace,
           { id: `design-create-${Date.now()}`, timestamp: new Date().toLocaleTimeString(), type: "Tool Call", title: "Actual Forma floor-stack created", detail: `${resolvedBuilding.footprintSqFt.toLocaleString()} ft² footprint · ${resolvedBuilding.heightFt} ft height`, source: "forma" },

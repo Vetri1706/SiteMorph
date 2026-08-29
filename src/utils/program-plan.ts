@@ -26,6 +26,12 @@ function normalizeSide(value?: string): ProgramPlanSide {
   return "north";
 }
 
+export function isConfirmedAccessRoad(value: string): boolean {
+  const normalized = value.trim();
+  if (!normalized) return false;
+  return !/(^|\b)(confirm|confirmation|to be confirmed|tbd|unknown|not specified|not confirmed)(\b|$)|forma context/i.test(normalized);
+}
+
 function makeZone(
   id: string,
   name: string,
@@ -40,8 +46,24 @@ function makeZone(
   dimensionAreaSqFt = areaSqFt,
   buildingDepthFt?: number,
 ): ProgramPlanZone {
-  const widthFactor = role === "primary" ? 0.68 : role === "upper" ? 0.42 : 0.38;
-  const widthFt = Math.max(18, Math.min(buildingWidthFt, buildingWidthFt * widthFactor));
+  const boundedAreaSqFt = Math.max(0, dimensionAreaSqFt);
+  let widthFt: number;
+  let depthFt: number;
+  if (buildingDepthFt && Number.isFinite(buildingDepthFt)) {
+    if (level === "ground" || side === "east" || side === "west") {
+      depthFt = buildingDepthFt;
+      widthFt = boundedAreaSqFt / Math.max(1, depthFt);
+    } else {
+      widthFt = buildingWidthFt;
+      depthFt = boundedAreaSqFt / Math.max(1, widthFt);
+    }
+    widthFt = Math.max(0.1, Math.min(buildingWidthFt, widthFt));
+    depthFt = Math.max(0.1, Math.min(buildingDepthFt, depthFt));
+  } else {
+    const widthFactor = role === "primary" ? 0.68 : role === "upper" ? 0.42 : 0.38;
+    widthFt = Math.max(18, Math.min(buildingWidthFt, buildingWidthFt * widthFactor));
+    depthFt = Math.max(1, boundedAreaSqFt / widthFt);
+  }
   return {
     id,
     name,
@@ -49,7 +71,7 @@ function makeZone(
     level,
     areaSqFt: Math.max(0, Math.round(areaSqFt)),
     widthFt: roundDimension(widthFt),
-    depthFt: roundDimension(Math.max(1, Math.min(buildingDepthFt ?? Number.POSITIVE_INFINITY, dimensionAreaSqFt / widthFt))),
+    depthFt: roundDimension(depthFt),
     side,
     levelCount,
     source,
@@ -68,11 +90,17 @@ export function createProgramPlan(brief: DesignBrief, mass: ProgramPlanMass, opt
   const representativeUpperAreaSqFt = upperLevelCount > 0 ? upperAreaSqFt / upperLevelCount : 0;
   const itemizedProgram = brief.program.filter((item) => item.areaSqFt > 0);
   const programTotal = itemizedProgram.reduce((total, item) => total + item.areaSqFt, 0);
+  const planProgramItems = itemizedProgram.length > 6
+    ? [
+      ...itemizedProgram.slice(0, 5),
+      { name: "Other itemized program", areaSqFt: itemizedProgram.slice(5).reduce((total, item) => total + item.areaSqFt, 0) },
+    ]
+    : itemizedProgram;
 
   let groundZones: ProgramPlanZone[];
   if (programTotal > 0) {
     const groundTarget = Math.max(1, mass.footprintSqFt);
-    groundZones = itemizedProgram.slice(0, 6).map((item, index) => {
+    groundZones = planProgramItems.map((item, index) => {
       const allocatedGroundArea = item.areaSqFt / programTotal * groundTarget;
       const role: ProgramPlanZone["role"] = index === 0 ? "primary" : /service|utility|mechanical|core|circulation/i.test(item.name) ? "support" : "secondary";
       return makeZone(
@@ -84,6 +112,10 @@ export function createProgramPlan(brief: DesignBrief, mass: ProgramPlanMass, opt
         buildingWidthFt,
         "requirement",
         `${item.areaSqFt.toLocaleString()} ft² requested gross program; shown here as a proportional preliminary ground allocation.`,
+        upperAreaSqFt === 0 && role === "primary" ? sensitiveProgramSide : undefined,
+        undefined,
+        allocatedGroundArea,
+        buildingDepthFt,
       );
     });
   } else {
@@ -96,6 +128,10 @@ export function createProgramPlan(brief: DesignBrief, mass: ProgramPlanMass, opt
       buildingWidthFt,
       "typology-template",
       `Preliminary ${profile.label.toLowerCase()} planning ratio; replace with the project room/program schedule.`,
+      upperAreaSqFt === 0 && zone.role === "primary" ? sensitiveProgramSide : undefined,
+      undefined,
+      mass.footprintSqFt * zone.ratio,
+      buildingDepthFt,
     ));
   }
 
@@ -116,8 +152,11 @@ export function createProgramPlan(brief: DesignBrief, mass: ProgramPlanMass, opt
 
   const itemCount = Math.max(0, Math.round(brief.loadingDocks));
   const operations = profile.operations;
+  const accessConfirmed = isConfirmedAccessRoad(brief.preferredAccessRoad);
+  const interventionProgramLabel = upperAreaSqFt > 0 ? profile.upperLevelLabel : profile.occupiedProgramLabel;
+  const interventionProgramLevel = upperAreaSqFt > 0 ? "upper" : "ground";
   const programSummary = programTotal > 0
-    ? `${itemizedProgram.length} itemized program ${itemizedProgram.length === 1 ? "area" : "areas"} · ${programTotal.toLocaleString()} ft² requested`
+    ? `${itemizedProgram.length} itemized program ${itemizedProgram.length === 1 ? "area" : "areas"} · ${programTotal.toLocaleString()} ft² requested${itemizedProgram.length > 6 ? " · smaller items grouped in the diagram" : ""}`
     : `Program not itemized · preliminary ${profile.label.toLowerCase()} template derived from the ${mass.grossFloorAreaSqFt.toLocaleString()} ft² gross target`;
 
   return {
@@ -137,6 +176,8 @@ export function createProgramPlan(brief: DesignBrief, mass: ProgramPlanMass, opt
     orientation: mass.orientationLabel,
     northEdgeUse: operations.edgeLabel,
     officeMezzanineSide: sensitiveProgramSide,
+    interventionProgramLabel,
+    interventionProgramLevel,
     zones: [...groundZones, ...upperZones],
     operations: {
       edgeLabel: operations.edgeLabel,
@@ -155,14 +196,42 @@ export function createProgramPlan(brief: DesignBrief, mass: ProgramPlanMass, opt
       status: brief.requiredParking > 0 ? "requirement" : "not-specified",
     },
     access: {
-      preferredRoad: brief.preferredAccessRoad.trim() || "To be confirmed",
-      status: brief.preferredAccessRoad.trim() ? "requirement" : "to-be-confirmed",
+      preferredRoad: accessConfirmed ? brief.preferredAccessRoad.trim() : "To be confirmed",
+      status: accessConfirmed ? "requirement" : "to-be-confirmed",
     },
     climateMoves: options.climateMoves ?? [
       `Keep the ${operations.edgeLabel.toLowerCase()} shaded and operationally clear.`,
-      `Place the most heat-sensitive occupied program on the ${sensitiveProgramSide} side where the tested mass allows it.`,
+      `Place the most heat-sensitive ${interventionProgramLabel.toLowerCase()} on the ${sensitiveProgramSide} side where the preliminary program diagram allows it.`,
       "Treat the west edge as an envelope, shade and service-buffer priority.",
     ],
-    disclaimer: `Preliminary ${profile.label.toLowerCase()} program diagram, not a permit floor plan. Program ratios, sheltered-edge and outdoor-zone depths are SiteMorph concept assumptions and require planning, access, fire, structural, clinical/operational and civil verification as applicable.`,
+    disclaimer: `Preliminary ${profile.label.toLowerCase()} program diagram, not a permit floor plan. Program ratios, sheltered-edge and outdoor-zone depths are SiteMorph concept assumptions and require planning, access, fire, structural, operational and civil verification as applicable.`,
   };
+}
+
+export function groundZonesInSpatialOrder(plan: ProgramPlan): ProgramPlanZone[] {
+  const zones = plan.zones.filter((zone) => zone.level === "ground");
+  const primaryIndex = zones.findIndex((zone) => zone.role === "primary" && (zone.side === "east" || zone.side === "west"));
+  if (primaryIndex < 0) return zones;
+  const primary = zones[primaryIndex];
+  const others = zones.filter((_, index) => index !== primaryIndex);
+  return primary.side === "east" ? [...others, primary] : [primary, ...others];
+}
+
+export function formatInterventionPlacement(value: string, plan: ProgramPlan): string {
+  if (plan.access.status === "requirement") return value;
+  return value
+    .replace(/north[- ]west,?\s*access[- ]aligned/gi, "North-west concept placement · access unconfirmed")
+    .replace(/an access[- ]aligned mass/gi, "a concept mass (access unconfirmed)")
+    .replace(/access[- ]aligned mass/gi, "concept mass (access unconfirmed)")
+    .replace(/north[- ]west access edge/gi, "north-west concept edge (access unconfirmed)")
+    .replace(/access[- ]aligned/gi, "concept placement · access unconfirmed");
+}
+
+export function presentDesignNarrative(value: string | undefined, plan: ProgramPlan): string {
+  if (!value) return "No design-decision narrative was recorded.";
+  const label = plan.interventionProgramLabel.toLowerCase();
+  const typologyAware = value
+    .replace(/sensitive\s*\/\s*upper program/gi, label)
+    .replace(/sensitive upper program/gi, label);
+  return formatInterventionPlacement(typologyAware, plan);
 }

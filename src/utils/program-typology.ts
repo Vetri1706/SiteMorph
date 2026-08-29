@@ -11,6 +11,7 @@ export interface BuildingTypologyProfile {
   key: BuildingTypology;
   label: string;
   zones: TypologyZoneTemplate[];
+  occupiedProgramLabel: string;
   upperLevelLabel: string;
   operations: {
     edgeLabel: string;
@@ -31,6 +32,7 @@ const profiles: Record<BuildingTypology, BuildingTypologyProfile> = {
       { id: "staging", name: "Staging / dispatch", ratio: 0.12, role: "secondary" },
       { id: "service-core", name: "Service / utility core", ratio: 0.04, role: "support" },
     ],
+    occupiedProgramLabel: "Occupied office / administration program",
     upperLevelLabel: "Office / administration upper level",
     operations: { edgeLabel: "North loading edge", itemLabel: "loading dock", shelteredBandLabel: "Shaded loading canopy", shelteredBandDepthFt: 18, outdoorZoneLabel: "Truck court / maneuvering zone", outdoorZoneDepthFt: 120 },
   },
@@ -43,6 +45,7 @@ const profiles: Record<BuildingTypology, BuildingTypologyProfile> = {
       { id: "public-admin", name: "Public / administration", ratio: 0.18, role: "secondary" },
       { id: "clinical-support", name: "Clinical support / building services", ratio: 0.15, role: "support" },
     ],
+    occupiedProgramLabel: "Occupied clinical / patient program",
     upperLevelLabel: "Upper-level clinical / administration program",
     operations: { edgeLabel: "North patient and emergency arrival", itemLabel: "service bay", shelteredBandLabel: "Covered patient / ambulance arrival", shelteredBandDepthFt: 30, outdoorZoneLabel: "Emergency access / patient drop-off", outdoorZoneDepthFt: 60 },
   },
@@ -55,6 +58,7 @@ const profiles: Record<BuildingTypology, BuildingTypologyProfile> = {
       { id: "amenities", name: "Reception / amenities", ratio: 0.15, role: "secondary" },
       { id: "service-core", name: "Vertical circulation / services", ratio: 0.1, role: "support" },
     ],
+    occupiedProgramLabel: "Occupied workplace program",
     upperLevelLabel: "Upper-level workplace program",
     operations: { edgeLabel: "North main arrival", itemLabel: "service bay", shelteredBandLabel: "Shaded pedestrian entry", shelteredBandDepthFt: 18, outdoorZoneLabel: "Arrival forecourt / fire access", outdoorZoneDepthFt: 40 },
   },
@@ -67,6 +71,7 @@ const profiles: Record<BuildingTypology, BuildingTypologyProfile> = {
       { id: "assembly", name: "Assembly / dining / activity", ratio: 0.15, role: "secondary" },
       { id: "admin-service", name: "Administration / services", ratio: 0.2, role: "support" },
     ],
+    occupiedProgramLabel: "Occupied learning program",
     upperLevelLabel: "Upper-level learning program",
     operations: { edgeLabel: "North student arrival", itemLabel: "service bay", shelteredBandLabel: "Covered student entry", shelteredBandDepthFt: 20, outdoorZoneLabel: "Bus / parent drop-off and fire access", outdoorZoneDepthFt: 80 },
   },
@@ -79,6 +84,7 @@ const profiles: Record<BuildingTypology, BuildingTypologyProfile> = {
       { id: "amenities", name: "Resident amenities", ratio: 0.1, role: "secondary" },
       { id: "service-core", name: "Building services", ratio: 0.05, role: "support" },
     ],
+    occupiedProgramLabel: "Occupied residential program",
     upperLevelLabel: "Upper-level residential program",
     operations: { edgeLabel: "North resident arrival", itemLabel: "service bay", shelteredBandLabel: "Covered lobby / resident entry", shelteredBandDepthFt: 18, outdoorZoneLabel: "Pick-up / service and fire access", outdoorZoneDepthFt: 40 },
   },
@@ -91,6 +97,7 @@ const profiles: Record<BuildingTypology, BuildingTypologyProfile> = {
       { id: "back-of-house", name: "Back of house", ratio: 0.12, role: "support" },
       { id: "circulation", name: "Circulation / building services", ratio: 0.08, role: "support" },
     ],
+    occupiedProgramLabel: "Occupied guest program",
     upperLevelLabel: "Upper-level guest-room program",
     operations: { edgeLabel: "North guest and service arrival", itemLabel: "service bay", shelteredBandLabel: "Porte-cochère / covered arrival", shelteredBandDepthFt: 30, outdoorZoneLabel: "Guest drop-off / service court", outdoorZoneDepthFt: 60 },
   },
@@ -103,6 +110,7 @@ const profiles: Record<BuildingTypology, BuildingTypologyProfile> = {
       { id: "customer-support", name: "Customer support / circulation", ratio: 0.1, role: "secondary" },
       { id: "service-core", name: "Service / utility core", ratio: 0.1, role: "support" },
     ],
+    occupiedProgramLabel: "Occupied customer / retail program",
     upperLevelLabel: "Upper-level retail / administration program",
     operations: { edgeLabel: "North customer and service edge", itemLabel: "service bay", shelteredBandLabel: "Shaded storefront / customer entry", shelteredBandDepthFt: 18, outdoorZoneLabel: "Customer forecourt / service access", outdoorZoneDepthFt: 50 },
   },
@@ -115,6 +123,7 @@ const profiles: Record<BuildingTypology, BuildingTypologyProfile> = {
       { id: "shared-program", name: "Shared amenities / circulation", ratio: 0.2, role: "secondary" },
       { id: "service-core", name: "Vertical circulation / services", ratio: 0.15, role: "support" },
     ],
+    occupiedProgramLabel: "Occupied public / residential program",
     upperLevelLabel: "Upper-level mixed-use program",
     operations: { edgeLabel: "North public and service arrival", itemLabel: "service bay", shelteredBandLabel: "Covered public entry", shelteredBandDepthFt: 20, outdoorZoneLabel: "Arrival / servicing / fire access", outdoorZoneDepthFt: 50 },
   },
@@ -127,6 +136,7 @@ const profiles: Record<BuildingTypology, BuildingTypologyProfile> = {
       { id: "circulation", name: "Circulation / shared area", ratio: 0.1, role: "secondary" },
       { id: "service-core", name: "Building services / core", ratio: 0.08, role: "support" },
     ],
+    occupiedProgramLabel: "Occupied program",
     upperLevelLabel: "Upper-level program allowance",
     operations: { edgeLabel: "North primary arrival", itemLabel: "service bay", shelteredBandLabel: "Sheltered arrival / service edge", shelteredBandDepthFt: 18, outdoorZoneLabel: "Arrival / service and fire access", outdoorZoneDepthFt: 50 },
   },

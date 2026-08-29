@@ -1,5 +1,6 @@
 import { ArrowUp, Ruler } from "lucide-react";
 import type { ProgramPlan, ProgramPlanZone } from "../../types";
+import { groundZonesInSpatialOrder } from "../../utils/program-plan";
 
 interface ProgramPlanDiagramProps {
   plan: ProgramPlan;
@@ -12,7 +13,7 @@ const dimensions = (zone: ProgramPlanZone) => `${zone.widthFt.toLocaleString()}�
 
 function ZoneContent({ zone }: { zone: ProgramPlanZone }) {
   const levelLabel = zone.levelCount && zone.levelCount > 1 ? `${zone.levelCount} upper levels · representative level` : zone.level;
-  return <div className="plan-zone-content"><strong>{zone.name}</strong><span>{area(zone.areaSqFt)}{zone.levelCount && zone.levelCount > 1 ? " aggregate" : ""}</span><small>{dimensions(zone)} · {levelLabel}</small></div>;
+  return <div className="plan-zone-content"><strong>{zone.name}</strong><span>{area(zone.areaSqFt)}{zone.levelCount && zone.levelCount > 1 ? " aggregate" : ""}</span><small>{dimensions(zone)} · {levelLabel}{zone.side ? ` · ${zone.side} side` : ""}</small></div>;
 }
 
 function OperationsStrip({ plan }: { plan: ProgramPlan }) {
@@ -25,8 +26,9 @@ function OperationsStrip({ plan }: { plan: ProgramPlan }) {
 }
 
 export function ProgramPlanDiagram({ plan, title = "Dimensioned program plan", compact = false }: ProgramPlanDiagramProps) {
-  const groundZones = plan.zones.filter((zone) => zone.level === "ground");
+  const groundZones = groundZonesInSpatialOrder(plan);
   const upperZones = plan.zones.filter((zone) => zone.level !== "ground");
+  const proportionalGroundColumns = groundZones.map((zone) => `${Math.max(1, zone.areaSqFt)}fr`).join(" ");
 
   return <figure className={`program-plan ${compact ? "program-plan-compact" : ""}`}>
     <figcaption><div><span>SiteMorph 2D · {plan.typologyLabel}</span><strong>{title}</strong></div><div className="plan-north"><ArrowUp size={13} /><b>N</b></div></figcaption>
@@ -38,9 +40,9 @@ export function ProgramPlanDiagram({ plan, title = "Dimensioned program plan", c
         <tbody>
           <tr className="plan-row-loading"><td colSpan={3}><OperationsStrip plan={plan} /></td></tr>
           <tr className="plan-row-canopy"><td colSpan={3}><strong>{plan.operations.shelteredBandLabel}</strong><span>{plan.operations.shelteredBandDepthFt}′ concept depth</span></td></tr>
-          <tr><td colSpan={3} className="plan-zone-grid-cell"><div className="plan-zone-grid">
-            {groundZones.map((zone) => <div key={zone.id} className={`plan-zone plan-zone-${zone.role}`}><ZoneContent zone={zone} /></div>)}
-            {upperZones.map((zone) => <div key={zone.id} className="plan-zone plan-zone-upper"><ZoneContent zone={zone} /><small>{zone.side} side overlay</small></div>)}
+          <tr><td colSpan={3} className="plan-zone-grid-cell"><div className="plan-zone-grid" style={{ gridTemplateColumns: proportionalGroundColumns || undefined }}>
+            {groundZones.map((zone) => <div key={zone.id} className={`plan-zone plan-zone-${zone.role}`} style={{ gridRow: "auto" }}><ZoneContent zone={zone} /></div>)}
+            {upperZones.map((zone) => <div key={zone.id} className="plan-zone plan-zone-upper" style={{ gridColumn: "1 / -1", gridRow: "auto" }}><ZoneContent zone={zone} /><small>{zone.side} side overlay</small></div>)}
           </div></td></tr>
           {!compact && <>
             <tr className="plan-row-truck"><td colSpan={3}><strong>{plan.operations.outdoorZoneLabel}</strong><span>{plan.operations.outdoorZoneDepthFt}′ concept depth · verify access and fire operations</span></td></tr>
