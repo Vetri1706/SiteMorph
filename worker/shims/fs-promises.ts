@@ -1,4 +1,4 @@
-import { getRuntimeBucket, normalizeRuntimeKey } from "./runtime-store";
+import { getRuntimeBucket, normalizeRuntimeKey } from "./runtime-store.ts";
 
 function missing(path: string): Error & { code: string } {
   return Object.assign(new Error(`Hosted cache entry not found: ${path}`), { code: "ENOENT" });

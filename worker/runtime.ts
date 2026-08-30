@@ -1,6 +1,6 @@
-import { createSiteAnalyzeMiddleware } from "../server/fortyguard";
-import { bindGuardedFetch } from "./shims/fetch";
-import { bindRuntimeBucket, type RuntimeBucket } from "./shims/runtime-store";
+import { createSiteAnalyzeMiddleware } from "../server/fortyguard.ts";
+import { bindGuardedFetch } from "./shims/fetch.ts";
+import { bindRuntimeBucket, type RuntimeBucket } from "./shims/runtime-store.ts";
 
 type HostedEnv = {
   ASSETS: { fetch(request: Request): Promise<Response> };
@@ -42,8 +42,10 @@ let middlewareConfig: ReturnType<typeof runtimeConfig> | undefined;
 class NodeRequestAdapter {
   method: string;
   url: string;
+  private readonly bodyText: string;
 
-  constructor(private readonly request: Request, private readonly bodyText: string) {
+  constructor(request: Request, bodyText: string) {
+    this.bodyText = bodyText;
     this.method = request.method;
     const url = new URL(request.url);
     this.url = `${url.pathname}${url.search}`;

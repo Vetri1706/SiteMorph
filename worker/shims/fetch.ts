@@ -1,5 +1,5 @@
-import { activityCacheKey } from "../../server/cache-key";
-import { getRuntimeBucket, normalizeRuntimeKey, type RuntimeBucket } from "./runtime-store";
+import { activityCacheKey } from "../../server/cache-key.ts";
+import { getRuntimeBucket, normalizeRuntimeKey, type RuntimeBucket } from "./runtime-store.ts";
 
 type GuardConfig = {
   baseUrl: string;

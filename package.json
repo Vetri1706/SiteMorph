@@ -22,7 +22,7 @@
     "test:revit": "node --experimental-strip-types --test tests/revit-obj.test.ts",
     "test:cache": "node --experimental-strip-types --test tests/analysis-cache.test.ts tests/analysis-state.test.ts tests/full-evidence-policy.test.ts tests/local-full-evidence.test.ts",
     "test:hybrid": "node --experimental-strip-types --test tests/climate-response.test.ts",
-    "test:vercel": "node --experimental-strip-types --test tests/vercel-blob-store.test.ts",
+    "test:vercel": "node --experimental-strip-types --test tests/vercel-blob-store.test.ts tests/vercel-entrypoint.test.ts",
     "build": "vite build && node scripts/prepare-sites-build.mjs && node scripts/build-sites-worker.mjs",
     "preview": "vite preview",
     "test:sites": "node --test tests/sites-worker.test.mjs tests/sites-hosted-api.test.mjs"
