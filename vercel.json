@@ -1,0 +1,14 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist/client",
+  "functions": {
+    "api/site/analyze.ts": {
+      "maxDuration": 60
+    },
+    "api/fortyguard/usage.ts": {
+      "maxDuration": 30
+    }
+  }
+}

@@ -251,6 +251,7 @@ Start from `.env.example`. Never expose a FortyGuard key, Autodesk client secret
 | `FORTYGUARD_POLL_INTERVAL_MS` | Server only | Delay between provider status checks |
 | `FORTYGUARD_CACHE_VERSION` | Server only | Intentional cache-schema/refresh boundary |
 | `SITEMORPH_HOSTED_ACTIVITY_BUDGET` | Hosted server only | Persistent public lifetime activity ceiling; defaults to the guarded 12-core limit |
+| `BLOB_STORE_ID` | Vercel-managed server only | Private Vercel Blob store used for AOI results, activity IDs, locks and the lifetime quota; injected when the store is connected |
 
 Local aggregate responses are saved under `.sitemorph-cache/fortyguard/`, per-activity IDs and statuses under `.sitemorph-cache/fortyguard-activities/`, and the dated usage snapshot at `.sitemorph-cache/fortyguard-usage.json`. Equivalent polygon rotation or winding produces the same canonical AOI key. Ambiguous network failures never rotate credentials or silently resubmit paid work.
 
@@ -266,6 +267,7 @@ npm run test:report
 npm run test:cache
 npm run test:hybrid
 npm run test:revit
+npm run test:vercel
 npm run build
 npm run test:sites
 ```
@@ -280,7 +282,11 @@ dist/.openai/hosting.json
 
 ## Deployment
 
-`npm run build` packages the client and server worker used by the current Sites-compatible deployment. Any other host must provide all of the following:
+SiteMorph's production target is Vercel. `vercel.json` publishes `dist/client` as the Vite application and deploys `/api/site/analyze` plus the deliberately disabled public usage route as Node.js Functions. A connected private Vercel Blob store supplies durable object storage and ETag compare-and-set behavior for the AOI cache, saved activity IDs, in-flight locks and the one-time hosted quota reservation.
+
+Production credentials are scoped to Vercel Production only. `FORTYGUARD_API_KEY` and the ordered comma-separated `FORTYGUARD_FALLBACK_API_KEYS` remain encrypted server variables; preview deployments receive no FortyGuard credentials. The production browser build enables the explicit uncached-analysis confirmation while enrichment stays disabled, and `SITEMORPH_HOSTED_ACTIVITY_BUDGET=12` remains the authoritative lifetime ceiling.
+
+`npm run build` also preserves the Sites-compatible package. Any additional host must provide all of the following:
 
 - HTTPS static delivery for `dist/client`;
 - a server-side `/api/site/analyze` runtime;

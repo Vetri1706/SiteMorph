@@ -1,4 +1,3 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
@@ -6,6 +5,7 @@ import type { Feature, FeatureCollection, Polygon } from "geojson";
 import type { ClimateDNA, FortyGuardUsage, RiskLevel, SiteAnalysisResponse } from "../src/types/index.ts";
 import { activityCacheKey, analysisCacheKey } from "./cache-key.ts";
 import { classifyOptionalEvidenceFailure, requiredNewActivityCount } from "./full-evidence-policy.ts";
+import { mkdir, readFile, rename, writeFile } from "./persistence.ts";
 import { rankThermalTiles } from "./ranking.ts";
 
 type AnalyticType = "tcm" | "persistence" | "exceedance" | "time_of_measure";

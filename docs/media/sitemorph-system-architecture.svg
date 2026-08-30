@@ -130,7 +130,7 @@
     <circle cx="34" cy="24" r="28" fill="#0c4548" stroke="#19b7b0" stroke-width="3"/><text x="34" y="33" text-anchor="middle" class="chip">3</text>
     <text x="82" y="32" class="step">SECURE ORCHESTRATOR</text>
     <text x="0" y="98" class="card-title">Cache, activity and credit control</text>
-    <text x="0" y="141" class="card-subtitle">Local Vite middleware · hosted Worker adapter</text>
+    <text x="0" y="141" class="card-subtitle">Local Vite middleware · Worker / Vercel Function adapters</text>
     <text x="0" y="202" class="bullet-strong">• Canonical identity</text>
     <text x="28" y="241" class="bullet">AOI + dates + threshold + granularity</text>
     <text x="28" y="278" class="bullet">timezone + optional evidence + schema</text>
@@ -139,7 +139,7 @@
     <text x="0" y="431" class="bullet-strong">• In-flight dedupe · lock · quota reserve</text>
     <rect x="0" y="466" width="820" height="121" rx="20" fill="#07252c" stroke="#19b7b0" stroke-opacity=".8"/>
     <text x="24" y="503" class="mono">CACHE HIT → 0 new activities</text>
-    <text x="24" y="540" class="route">local FS · hosted R2-compatible CACHE</text>
+    <text x="24" y="540" class="route">local FS · R2 or private Vercel Blob + ETag CAS</text>
     <text x="24" y="575" class="route">local max 15 · hosted lifetime max 12 core</text>
   </g>
 
