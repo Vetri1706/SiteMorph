@@ -6,7 +6,6 @@ interface ImportMetaEnv {
 }
 
 interface ImportMetaEnv {
-  readonly VITE_MOCK_MODE?: string;
   readonly VITE_SITEMORPH_BACKEND_URL?: string;
 }
 

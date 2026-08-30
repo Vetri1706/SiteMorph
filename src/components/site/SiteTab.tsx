@@ -33,21 +33,30 @@ export function SiteTab() {
       ].filter(Boolean).join(" · ");
   const initialAnalysisEnabled = appConfig.paidFortyGuardAnalysis;
   const firstRunReady = analysisCacheStatus === "missing" && initialAnalysisEnabled;
+  const noThermalCoverage = analysisCacheStatus === "unavailable";
   const actionLabel = analysisStatus === "running"
     ? analysisCacheStatus === "checking" ? "Checking Saved Climate DNA" : "Running Initial Climate Analysis"
     : analysisStatus === "waiting"
       ? "Check Processing Status"
     : analysisStatus === "completed"
       ? "Open Climate DNA"
+      : noThermalCoverage
+        ? "Select Another Site Limit"
       : firstRunReady
-        ? "Run First Thermal Analysis · max 12"
+        ? appConfig.optionalFortyGuardEvidence
+          ? `Run Full First Analysis · max ${appConfig.firstRunActivityLimit}`
+          : "Run First Thermal Analysis · max 12"
         : initialAnalysisEnabled
           ? "Check Saved Climate DNA"
           : "Load Saved Climate DNA";
   const actionDetail = analysisStatus === "waiting"
     ? "Auto-checking saved activity IDs · short requests only · no new submissions"
+    : noThermalCoverage
+      ? "Provider returned 0 cells · saved activity IDs retained · retry disabled"
     : firstRunReady
-    ? "Explicit approval required · core thermal only · saved for automatic no-credit reuse"
+    ? appConfig.optionalFortyGuardEvidence
+      ? "Explicit approval required · thermal + environment + satellite + street context · then cache-only"
+      : "Explicit approval required · core thermal only · saved for automatic no-credit reuse"
     : initialAnalysisEnabled
       ? "Saved AOI is checked first · no new FortyGuard activity starts during this check"
       : analysisStatus === "completed"
@@ -75,7 +84,7 @@ export function SiteTab() {
         <div className="status-list">
           <div><span><ShieldCheck size={16} />Forma Connection</span><StatusPill label={connection.connected ? "Connected" : "Connecting"} tone={connection.connected ? "success" : "neutral"} /></div>
           <div><span><ScanLine size={16} />Site Geometry</span><StatusPill label={geometry ? "Ready" : "Missing"} tone={geometry ? "success" : "warning"} /></div>
-          <div><span><Database size={16} />FortyGuard</span><StatusPill label={appConfig.hostedSite ? "Hosted · capped" : "Ready"} tone="success" /></div>
+          <div><span><Database size={16} />FortyGuard</span><StatusPill label={noThermalCoverage ? "No coverage" : appConfig.hostedSite ? "Hosted · capped" : "Ready"} tone={noThermalCoverage ? "warning" : "success"} /></div>
         </div>
         <div className={`boundary-callout ${selectionStatus === "waiting" || selectionStatus === "resolving" ? "boundary-waiting" : ""}`}>
           <span className="boundary-icon"><BoxSelect size={19} /></span>
@@ -92,14 +101,20 @@ export function SiteTab() {
             setActiveTab("climate");
             return;
           }
+          if (noThermalCoverage) {
+            void selectSiteLimit();
+            return;
+          }
           if (firstRunReady) {
-            const approved = window.confirm("Run the first hosted thermal analysis for this Site Limit? This may create up to 12 FortyGuard activities. Optional imagery remains deferred, and the completed result will be reused without new activities.");
+            const approved = window.confirm(appConfig.optionalFortyGuardEvidence
+              ? `Run the first full-evidence analysis for this Site Limit? This may create up to ${appConfig.firstRunActivityLimit} FortyGuard activities: 12 hot-season thermal activities plus environmental, satellite, and street-edge context. The completed canonical result will be reused without new activities.`
+              : "Run the first hosted thermal analysis for this Site Limit? This may create up to 12 FortyGuard activities. Optional imagery remains deferred, and the completed result will be reused without new activities.");
             if (approved) void analyzeSite(false);
             return;
           }
           void analyzeSite(true);
         }}>
-          <Play size={15} fill="currentColor" />{actionLabel}
+          {noThermalCoverage ? <Crosshair size={15} /> : <Play size={15} fill="currentColor" />}{actionLabel}
         </Button>
         <span>{actionDetail}</span>
       </div>

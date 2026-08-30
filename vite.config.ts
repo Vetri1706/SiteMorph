@@ -19,6 +19,10 @@ function siteMorphBackend(env: Record<string, string>): Plugin {
     .split(",")
     .map((key) => key.trim())
     .filter(Boolean);
+  const configuredPollAttempts = Number(env.FORTYGUARD_MAX_POLL_ATTEMPTS);
+  const maxPollAttempts = Number.isFinite(configuredPollAttempts) && configuredPollAttempts > 0
+    ? Math.min(120, Math.floor(configuredPollAttempts))
+    : 1;
   return {
     name: "sitemorph-backend",
     configureServer(server) {
@@ -29,9 +33,9 @@ function siteMorphBackend(env: Record<string, string>): Plugin {
         analysisDates,
         granularity: [60, 80, 100].includes(Number(env.FORTYGUARD_GRANULARITY)) ? Number(env.FORTYGUARD_GRANULARITY) as 60 | 80 | 100 : 60,
         pollIntervalMs: Number(env.FORTYGUARD_POLL_INTERVAL_MS) || 2000,
-        // Keep local and hosted behavior consistent: one bounded status sweep
-        // per SiteMorph request, with saved activity IDs resumed on demand.
-        maxPollAttempts: 1,
+        // A user-approved local first run may wait for the complete core and
+        // enrichment sequence. Hosted requests remain one-sweep operations.
+        maxPollAttempts,
         maxNewActivities,
         includeOptionalEvidence: env.FORTYGUARD_INCLUDE_OPTIONAL_EVIDENCE === "true",
         cacheVersion: env.FORTYGUARD_CACHE_VERSION || "v1",

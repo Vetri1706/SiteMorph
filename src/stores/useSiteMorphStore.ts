@@ -1,6 +1,5 @@
 import { create } from "zustand";
 import traceMock from "../mocks/agent-trace.json";
-import siteMock from "../mocks/site.json";
 import { analysisService } from "../services/analysis.service";
 import { climateService } from "../services/climate.service";
 import { designService } from "../services/design.service";
@@ -10,6 +9,10 @@ import { formaOverlayService } from "../services/overlay.service";
 import { formaDesignService } from "../services/forma-design.service";
 import { formaClimateResponseService } from "../services/forma-climate-response.service";
 import { revitHandoffService } from "../services/revit-handoff.service";
+import { formaSubdivisionService, type GeneratedSubdivisionResult } from "../services/forma-subdivision.service";
+import { formaSubdivisionOverlayService } from "../services/forma-subdivision-overlay.service";
+import { generateSubdivisionLayouts } from "../utils/subdivision-layout";
+import type { SubdivisionBrief, SubdivisionPlan } from "../types/subdivision";
 import type {
   AgentTraceEvent,
   AnalysisStep,
@@ -28,7 +31,8 @@ import type {
   SiteGeometry,
 } from "../types";
 import { appConfig, delay } from "../utils/config";
-import { settleRunningAnalysisSteps } from "../utils/analysis-state";
+import { markNoThermalCoverageSteps, settleRunningAnalysisSteps } from "../utils/analysis-state";
+import { mockSiteContext } from "../utils/mock-site";
 
 const warehouseDemoBrief: DesignBrief = {
   buildingType: "Warehouse / Distribution Facility",
@@ -62,9 +66,27 @@ const liveBrief: DesignBrief = {
   priority: "Balanced",
 };
 
+const defaultSubdivisionBrief: SubdivisionBrief = {
+  schemaVersion: "sitemorph.subdivision-brief.v1",
+  id: "climate-responsive-townhouse-neighborhood",
+  name: "Climate-responsive townhouse neighborhood",
+  dwellingType: "townhouse",
+  targetLotAreaSqFt: 3229.17,
+  minimumLotWidthFt: 32.81,
+  dwellingGfaSqFt: 1899,
+  floors: 2,
+  maxConnectedDwellings: 4,
+  roadWidthFt: 19.69,
+  pedestrianPathWidthFt: 4.92,
+  setbacks: { frontFt: 6.56, sideFt: 3.28, rearFt: 13.12, sitePerimeterFt: 4.92 },
+  openLandTargetPercent: 10,
+  parkingSpacesPerDwelling: 2,
+  treeCanopyTargetPercent: 18,
+};
+
 const createAnalysisSteps = (pointCount?: number): AnalysisStep[] => [
   { id: "geometry", label: "Site geometry extracted", detail: pointCount ? `${pointCount} Forma geometry points` : "Forma Site Limit", status: "pending" },
-  { id: "heatmap", label: appConfig.paidFortyGuardAnalysis ? "Climate evidence" : "Saved heat activities", detail: appConfig.mockMode ? "60 m resolution" : appConfig.paidFortyGuardAnalysis ? "Saved AOI first · new Site Limit: 12 core thermal activities maximum" : "Safe mode · resume saved activity IDs · zero new submissions", status: "pending" },
+  { id: "heatmap", label: appConfig.paidFortyGuardAnalysis ? "Climate evidence" : "Saved heat activities", detail: appConfig.mockMode ? "60 m resolution" : appConfig.paidFortyGuardAnalysis ? appConfig.optionalFortyGuardEvidence ? `Saved AOI first · full first run: ${appConfig.firstRunActivityLimit} activities maximum` : "Saved AOI first · new Site Limit: 12 core thermal activities maximum" : "Safe mode · resume saved activity IDs · zero new submissions", status: "pending" },
   { id: "persistence", label: "Persistent heat analysis", status: "pending" },
   { id: "exceedance", label: "Threshold exceedance analysis", detail: "35 °C threshold", status: "pending" },
   ...(!appConfig.mockMode ? [
@@ -99,8 +121,11 @@ function applyCreditUsage(usage: FortyGuardUsage) {
 }
 
 type SiteSelectionStatus = "idle" | "waiting" | "resolving" | "ready" | "error";
-type AnalysisCacheStatus = "unknown" | "checking" | "missing" | "pending" | "available";
+type AnalysisCacheStatus = "unknown" | "checking" | "missing" | "pending" | "available" | "unavailable";
+type DesignMode = "single-building" | "subdivision";
+type SubdivisionStatus = "idle" | "generating-options" | "options-ready" | "building-selected" | "completed" | "failed";
 let selectionRequestId = 0;
+let selectionCandidateRequestId = 0;
 let analysisRequestId = 0;
 let initializationStarted = false;
 let savedAnalysisPollTimer: number | undefined;
@@ -131,11 +156,17 @@ interface SiteMorphState {
   analysisCacheStatus: AnalysisCacheStatus;
   analysisSteps: AnalysisStep[];
   analysisError: string | null;
+  designMode: DesignMode;
   designBrief: DesignBrief;
   candidates: DesignCandidate[];
   candidateStatus: "idle" | "generating" | "completed" | "failed";
   generatedBuilding: GeneratedBuilding | null;
   buildingStatus: "idle" | "generating" | "analyzing" | "completed" | "failed";
+  subdivisionBrief: SubdivisionBrief;
+  subdivisionPlan: SubdivisionPlan | null;
+  selectedSubdivisionVariantId: string | null;
+  generatedSubdivision: GeneratedSubdivisionResult | null;
+  subdivisionStatus: SubdivisionStatus;
   revitHandoffStatus: "idle" | "preparing" | "ready" | "failed";
   revitHandoff: RevitHandoffReadiness | null;
   selectedCandidateId: string | null;
@@ -154,11 +185,16 @@ interface SiteMorphState {
   setThreshold(value: number): void;
   toggleLayer(layer: ClimateLayerId): Promise<void>;
   focusZone(zoneId: string): Promise<void>;
+  setDesignMode(mode: DesignMode): void;
   updateBrief(patch: Partial<DesignBrief>): void;
   updateProgram(index: number, areaSqFt: number): void;
   applySiteFitOption(option: SiteFitOption): void;
   generateCandidates(): Promise<void>;
   generateBuilding(): Promise<void>;
+  updateSubdivisionBrief(patch: Partial<SubdivisionBrief>): void;
+  generateSubdivisionOptions(): Promise<void>;
+  selectSubdivisionVariant(variantId: string): void;
+  generateSubdivision(): Promise<void>;
   prepareRevitHandoff(): Promise<void>;
   viewCandidate(candidateId: string): Promise<void>;
   selectCandidate(candidateId: string): Promise<void>;
@@ -170,23 +206,29 @@ interface SiteMorphState {
 export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
   activeTab: "site",
   connection: { connected: false, mode: appConfig.mockMode ? "mock" : "embedded", message: "Connecting…" },
-  site: appConfig.mockMode ? (siteMock as SiteContext) : null,
-  selectedSitePath: appConfig.mockMode ? (siteMock as SiteContext).geometry!.elementPath : null,
+  site: appConfig.mockMode ? mockSiteContext : null,
+  selectedSitePath: appConfig.mockMode ? mockSiteContext.geometry!.elementPath : null,
   siteSelectionStatus: appConfig.mockMode ? "ready" : "idle",
-  siteGeometry: appConfig.mockMode ? (siteMock as SiteContext).geometry! : null,
+  siteGeometry: appConfig.mockMode ? mockSiteContext.geometry! : null,
   climateDNA: null,
   rankedTiles: [],
   activeLayer: null,
   overlayVisible: false,
   analysisStatus: "idle",
   analysisCacheStatus: "unknown",
-  analysisSteps: createAnalysisSteps(appConfig.mockMode ? (siteMock as SiteContext).geometry!.pointCount : undefined),
+  analysisSteps: createAnalysisSteps(appConfig.mockMode ? mockSiteContext.geometry!.pointCount : undefined),
   analysisError: null,
+  designMode: "single-building",
   designBrief: appConfig.mockMode ? warehouseDemoBrief : liveBrief,
   candidates: [],
   candidateStatus: "idle",
   generatedBuilding: null,
   buildingStatus: "idle",
+  subdivisionBrief: defaultSubdivisionBrief,
+  subdivisionPlan: null,
+  selectedSubdivisionVariantId: null,
+  generatedSubdivision: null,
+  subdivisionStatus: "idle",
   revitHandoffStatus: "idle",
   revitHandoff: null,
   selectedCandidateId: null,
@@ -199,6 +241,8 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
   toast: null,
 
   setActiveTab: (activeTab) => set({ activeTab }),
+
+  setDesignMode: (designMode) => set({ designMode, toast: designMode === "subdivision" ? "Residential subdivision mode · saved FortyGuard Climate DNA will be reused" : "Single-building design mode" }),
 
   initialize: async () => {
     if (initializationStarted) return;
@@ -219,6 +263,10 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
         analysisSteps: createAnalysisSteps(),
         generatedBuilding: null,
         buildingStatus: "idle",
+        subdivisionPlan: null,
+        selectedSubdivisionVariantId: null,
+        generatedSubdivision: null,
+        subdivisionStatus: "idle",
         revitHandoffStatus: "idle",
         revitHandoff: null,
       });
@@ -234,7 +282,10 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
           set((state) => ({ site: state.site ? { ...state.site, creditsStatus: "unavailable" } : null }));
         });
       }
-      const resolveSelectedSiteLimit = async (selectedSitePath: string, options?: { autoRestore?: boolean; silentInvalid?: boolean }) => {
+      const resolveSelectedSiteLimit = async (
+        selectedSitePath: string,
+        options?: { autoRestore?: boolean; silentInvalid?: boolean; preloadedGeometry?: SiteGeometry },
+      ) => {
         const requestId = ++selectionRequestId;
         analysisRequestId += 1;
         cancelSavedAnalysisPolling(true);
@@ -251,30 +302,44 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
           analysisError: null,
           generatedBuilding: null,
           buildingStatus: "idle",
+          subdivisionPlan: null,
+          selectedSubdivisionVariantId: null,
+          generatedSubdivision: null,
+          subdivisionStatus: "idle",
           revitHandoffStatus: "idle",
           revitHandoff: null,
         });
         try {
-          const siteGeometry = await formaService.readSiteLimit(selectedSitePath);
+          const [siteGeometry, currentProject] = await Promise.all([
+            options?.preloadedGeometry
+              ? Promise.resolve(options.preloadedGeometry)
+              : formaService.readSiteLimit(selectedSitePath),
+            formaService.getCurrentProject().catch(() => null),
+          ]);
           if (requestId !== selectionRequestId || get().selectedSitePath !== selectedSitePath) return;
           await formaService.highlightElement(selectedSitePath);
-          set((state) => ({
-            siteGeometry,
-            siteSelectionStatus: "ready",
-            analysisSteps: createAnalysisSteps(siteGeometry.pointCount),
-            site: state.site ? {
-              ...state.site,
-              siteId: selectedSitePath,
-              siteName: "Selected Forma Site Limit",
-              selectedSiteLimit: selectedSitePath.split("/").at(-1) ?? "Site Limit",
-              geometry: siteGeometry,
-              areaSqFt: siteGeometry.areaSqFt ?? 0,
-              areaAcres: siteGeometry.areaAcres ?? 0,
-            } : state.site,
-            toast: options?.autoRestore
-              ? "Site boundary restored · checking the saved Climate DNA"
-              : `Site boundary detected · ${siteGeometry.pointCount} geometry points`,
-          }));
+          set((state) => {
+            const mergedSite = currentProject
+              ? { ...(state.site ?? {}), ...currentProject }
+              : state.site;
+            return {
+              siteGeometry,
+              siteSelectionStatus: "ready",
+              analysisSteps: createAnalysisSteps(siteGeometry.pointCount),
+              site: mergedSite ? {
+                ...mergedSite,
+                siteId: selectedSitePath,
+                siteName: "Selected Forma Site Limit",
+                selectedSiteLimit: selectedSitePath.split("/").at(-1) ?? "Site Limit",
+                geometry: siteGeometry,
+                areaSqFt: siteGeometry.areaSqFt ?? 0,
+                areaAcres: siteGeometry.areaAcres ?? 0,
+              } : null,
+              toast: options?.autoRestore
+                ? "Site boundary restored · checking the saved Climate DNA"
+                : `Site boundary detected · ${siteGeometry.pointCount} geometry points`,
+            };
+          });
           if (options?.autoRestore) await get().analyzeSite(true);
         } catch (error) {
           if (requestId !== selectionRequestId) return;
@@ -289,11 +354,22 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
       };
 
       await formaService.subscribeToSelection((paths) => {
-        const selectedSitePath = paths[0] ?? null;
-        set({ selectedSitePath });
+        const selectedSitePath = paths[0];
         const selectionStatus = get().siteSelectionStatus;
-        if (!selectedSitePath || (selectionStatus !== "waiting" && selectionStatus !== "resolving")) return;
-        void resolveSelectedSiteLimit(selectedSitePath, { autoRestore: true });
+        if (!selectedSitePath) return;
+        if (selectionStatus === "waiting" || selectionStatus === "resolving") {
+          void resolveSelectedSiteLimit(selectedSitePath, { autoRestore: true });
+          return;
+        }
+        if (selectionStatus !== "ready" || get().siteGeometry?.elementPath === selectedSitePath) return;
+        const candidateRequestId = ++selectionCandidateRequestId;
+        void formaService.readSiteLimit(selectedSitePath).then((siteGeometry) => {
+          if (candidateRequestId !== selectionCandidateRequestId) return;
+          void resolveSelectedSiteLimit(selectedSitePath, { autoRestore: true, preloadedGeometry: siteGeometry });
+        }).catch(() => {
+          // Selecting a building, tree, or concept overlay must not replace the
+          // active Site Limit or pair its path with stale AOI geometry.
+        });
       });
 
       if (!appConfig.mockMode) {
@@ -311,12 +387,13 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
 
   selectSiteLimit: async () => {
     if (appConfig.mockMode) {
-      const siteGeometry = await formaService.readSiteLimit((siteMock as SiteContext).geometry!.elementPath);
+      const siteGeometry = await formaService.readSiteLimit(mockSiteContext.geometry!.elementPath);
       set({ selectedSitePath: siteGeometry.elementPath, siteGeometry, siteSelectionStatus: "ready", toast: `Site boundary detected · ${siteGeometry.pointCount} geometry points` });
       return;
     }
 
     selectionRequestId += 1;
+    selectionCandidateRequestId += 1;
     analysisRequestId += 1;
     cancelSavedAnalysisPolling(true);
     set({
@@ -333,11 +410,15 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
       analysisSteps: createAnalysisSteps(),
       generatedBuilding: null,
       buildingStatus: "idle",
+      subdivisionPlan: null,
+      selectedSubdivisionVariantId: null,
+      generatedSubdivision: null,
+      subdivisionStatus: "idle",
       revitHandoffStatus: "idle",
       revitHandoff: null,
       toast: "Waiting for selection · Click a Site Limit in Forma",
     });
-    await Promise.all([formaOverlayService.clearLayers(), formaService.clearHighlight()]);
+    await Promise.all([formaOverlayService.clearLayers(), formaSubdivisionOverlayService.clear(), formaService.clearHighlight()]);
   },
 
   analyzeSite: async (cacheOnly = false) => {
@@ -347,7 +428,9 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
       return;
     }
     const requestId = ++analysisRequestId;
-    const isCurrentRequest = () => requestId === analysisRequestId && get().siteGeometry?.elementPath === geometry.elementPath;
+    const isCurrentRequest = () => requestId === analysisRequestId
+      && get().siteGeometry?.elementPath === geometry.elementPath
+      && get().selectedSitePath === geometry.elementPath;
     cancelSavedAnalysisPolling(!cacheOnly);
     set({
       analysisStatus: "running",
@@ -424,6 +507,7 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
       if (!isCurrentRequest()) return;
       const message = error instanceof Error ? error.message : "Analysis failed";
       const errorCode = error instanceof FortyGuardServiceError ? error.code : "";
+      const noThermalCoverage = errorCode === "NO_THERMAL_COVERAGE";
       const savedResultMissing = cacheOnly && (errorCode === "SAVED_ANALYSIS_MISSING" || message.includes("No complete saved analysis exists yet"));
       const normalizedMessage = message.toLowerCase();
       const savedActivitiesPending = [
@@ -436,6 +520,16 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
         || normalizedMessage.includes("still processing")
         || normalizedMessage.includes("request has stopped");
       set((state) => {
+        if (noThermalCoverage) {
+          cancelSavedAnalysisPolling(true);
+          return {
+            analysisStatus: "failed",
+            analysisCacheStatus: "unavailable",
+            analysisSteps: markNoThermalCoverageSteps(state.analysisSteps),
+            analysisError: message,
+            toast: "No FortyGuard thermal coverage for this Site Limit · saved activities will not be resubmitted",
+          };
+        }
         if (savedResultMissing) {
           cancelSavedAnalysisPolling(true);
           return {
@@ -567,6 +661,7 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
     }
     set({ buildingStatus: "generating", revitHandoffStatus: "idle", revitHandoff: null, toast: "Creating one real building mass in Forma…" });
     try {
+      await formaSubdivisionOverlayService.clear().catch(() => undefined);
       set({ buildingStatus: "analyzing" });
       const generatedBuilding = await formaDesignService.generateAndImprove(get().designBrief, geometry, climateDNA, get().generatedBuilding?.elementPath);
       let resolvedBuilding = generatedBuilding;
@@ -587,6 +682,8 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
       set((state) => ({
         generatedBuilding: resolvedBuilding,
         buildingStatus: "completed",
+        generatedSubdivision: null,
+        subdivisionStatus: state.subdivisionPlan ? "options-ready" : "idle",
         climateDNA: !state.climateDNA ? state.climateDNA : resolvedBuilding.climateResponse ? {
           ...state.climateDNA,
           layers: [
@@ -633,6 +730,141 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
       }));
     } catch (error) {
       set({ buildingStatus: "failed", toast: error instanceof Error ? error.message : "Forma building generation failed" });
+    }
+  },
+
+  updateSubdivisionBrief: (patch) => set((state) => ({
+    subdivisionBrief: {
+      ...state.subdivisionBrief,
+      ...patch,
+      setbacks: patch.setbacks ? { ...state.subdivisionBrief.setbacks, ...patch.setbacks } : state.subdivisionBrief.setbacks,
+    },
+    subdivisionPlan: null,
+    selectedSubdivisionVariantId: null,
+    generatedSubdivision: null,
+    subdivisionStatus: "idle",
+    revitHandoffStatus: "idle",
+    revitHandoff: null,
+  })),
+
+  generateSubdivisionOptions: async () => {
+    const climateDNA = get().climateDNA;
+    const geometry = get().siteGeometry;
+    if (!climateDNA || !geometry) {
+      set({ subdivisionStatus: "failed", toast: "Analyze a real Forma Site Limit before generating subdivision options." });
+      return;
+    }
+    set({ subdivisionStatus: "generating-options", generatedSubdivision: null, revitHandoffStatus: "idle", revitHandoff: null, toast: "Combining saved FortyGuard evidence with deterministic subdivision constraints…" });
+    await Promise.resolve();
+    try {
+      const subdivisionPlan = generateSubdivisionLayouts(geometry, climateDNA, get().subdivisionBrief);
+      const recommended = subdivisionPlan.variants.find((variant) => variant.rank === 1) ?? subdivisionPlan.variants[0];
+      set((state) => ({
+        subdivisionPlan,
+        selectedSubdivisionVariantId: recommended.id,
+        subdivisionStatus: "options-ready",
+        agentTrace: [
+          ...state.agentTrace,
+          {
+            id: `subdivision-fortyguard-${Date.now()}`,
+            timestamp: new Date().toLocaleTimeString(),
+            type: "Decision",
+            title: "FortyGuard-weighted subdivision options generated",
+            detail: `${subdivisionPlan.variants.length} deterministic plans · ${subdivisionPlan.historicalBurden.scorePercent}% historical heat burden · climate carries 50% of ranking`,
+            reason: `${subdivisionPlan.historicalBurden.formula} ${recommended.scoreBreakdown.formula}`,
+            source: "fortyguard",
+          },
+          {
+            id: `subdivision-plan-${Date.now()}`,
+            timestamp: new Date().toLocaleTimeString(),
+            type: "Recommendation",
+            title: `${recommended.label} ranked first`,
+            detail: `${recommended.metrics.dwellingCount} dwellings · ${recommended.metrics.landEfficiencyPercent}% land efficiency · ${recommended.metrics.treeCount} concept trees · ${recommended.climatePerformance.residualHeatRiskScore}/100 residual heat risk`,
+            reason: recommended.climatePerformance.formula,
+            source: "sitemorph",
+          },
+        ],
+        toast: `${subdivisionPlan.variants.length} auditable options ready · saved FortyGuard Climate DNA reused · zero new activities`,
+      }));
+    } catch (error) {
+      set({ subdivisionStatus: "failed", toast: error instanceof Error ? error.message : "Subdivision option generation failed" });
+    }
+  },
+
+  selectSubdivisionVariant: (variantId) => set((state) => {
+    const variant = state.subdivisionPlan?.variants.find((item) => item.id === variantId);
+    if (!variant) return { toast: "That subdivision option is no longer available." };
+    return {
+      selectedSubdivisionVariantId: variantId,
+      generatedSubdivision: state.generatedSubdivision?.variantId === variantId ? state.generatedSubdivision : null,
+      subdivisionStatus: state.generatedSubdivision?.variantId === variantId ? "completed" : "options-ready",
+      revitHandoffStatus: "idle",
+      revitHandoff: null,
+      toast: `${variant.label} selected · ${variant.metrics.dwellingCount} native dwellings will be created only when you confirm the build`,
+    };
+  }),
+
+  generateSubdivision: async () => {
+    const { climateDNA, siteGeometry, subdivisionPlan, selectedSubdivisionVariantId } = get();
+    const variant = subdivisionPlan?.variants.find((item) => item.id === selectedSubdivisionVariantId);
+    if (!climateDNA || !siteGeometry || !subdivisionPlan || !variant) {
+      set({ subdivisionStatus: "failed", toast: "Generate and select a FortyGuard-weighted subdivision option first." });
+      return;
+    }
+    set({ subdivisionStatus: "building-selected", generatedSubdivision: null, revitHandoffStatus: "idle", revitHandoff: null, toast: `Creating ${variant.metrics.dwellingCount} terrain-placed dwellings plus persistent roads and trees…` });
+    try {
+      const generatedSubdivision = await formaSubdivisionService.materialize(variant, siteGeometry);
+      let overlayRendered = true;
+      let overlayNote = "Transient labels rendered above persistent Forma roads, paths, green areas, lot outlines and low-poly tree models.";
+      try {
+        await formaOverlayService.clearLayers();
+        formaOverlayService.clearClimateResponse();
+        await formaSubdivisionOverlayService.render(siteGeometry, variant, "annotations-only");
+      } catch (error) {
+        overlayRendered = false;
+        overlayNote = error instanceof Error ? error.message : "The transient subdivision labels could not be rendered; persistent context remains in Forma.";
+      }
+      set((state) => ({
+        generatedSubdivision,
+        generatedBuilding: null,
+        buildingStatus: "idle",
+        subdivisionStatus: "completed",
+        activeLayer: null,
+        overlayVisible: false,
+        agentTrace: [
+          ...state.agentTrace,
+          {
+            id: `subdivision-native-${Date.now()}`,
+            timestamp: new Date().toLocaleTimeString(),
+            type: "Tool Call",
+            title: "Selected subdivision persisted as native dwellings plus concept context",
+            detail: `${generatedSubdivision.elements.length} verified floor stacks · ${generatedSubdivision.persistentContext.roadFeatureCount} road · ${generatedSubdivision.persistentContext.pedestrianPathFeatureCount} path · ${generatedSubdivision.persistentContext.treeCount} low-poly trees · ${generatedSubdivision.totalGrossFloorAreaSqFt.toLocaleString()} ft² dwelling GFA`,
+            reason: "Every dwelling and assumed tree is terrain-sampled and verified. The road/green plan is a refresh-safe virtual Forma context root; only dwelling floor stacks are the native Revit source.",
+            source: "forma",
+          },
+          {
+            id: `subdivision-overlay-${Date.now()}`,
+            timestamp: new Date().toLocaleTimeString(),
+            type: "Result",
+            title: overlayRendered ? "Persistent subdivision context labelled" : "Persistent subdivision retained; transient labels unavailable",
+            detail: overlayNote,
+            reason: "Roads, lots, open space and recognizable tree models persist as virtual SiteMorph concept elements; transient raster work is limited to labels and does not define the design.",
+            source: "sitemorph",
+          },
+          {
+            id: `subdivision-analysis-${Date.now()}`,
+            timestamp: new Date().toLocaleTimeString(),
+            type: "Result",
+            title: generatedSubdivision.nativeAnalysis.status === "succeeded" ? "Native Forma subdivision Sun analysis completed" : "Native Forma subdivision analysis recorded",
+            detail: generatedSubdivision.nativeAnalysis.note,
+            activityId: generatedSubdivision.nativeAnalysis.analysisId,
+            source: "forma",
+          },
+        ],
+        toast: `${generatedSubdivision.elements.length} native dwellings + ${generatedSubdivision.persistentContext.treeCount} persistent 3D trees verified · ${generatedSubdivision.nativeAnalysis.status === "succeeded" ? "Forma Sun measured" : "native analysis status recorded"} · zero new FortyGuard activities`,
+      }));
+    } catch (error) {
+      set({ subdivisionStatus: "failed", toast: error instanceof Error ? error.message : "Native Forma subdivision generation failed" });
     }
   },
 

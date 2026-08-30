@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { ArrowRight, BarChart3, Building2, Check, CheckCircle2, Download, Eye, LoaderCircle, Send, Sparkles } from "lucide-react";
+import { ArrowRight, BarChart3, Building2, Check, CheckCircle2, Download, Eye, LayoutGrid, LoaderCircle, Send, Sparkles } from "lucide-react";
 import { useSiteMorphStore } from "../../stores/useSiteMorphStore";
 import type { DesignBrief, DesignCandidate, FormaAnalysisMetric, GeneratedBuilding } from "../../types";
 import { appConfig } from "../../utils/config";
@@ -10,6 +10,7 @@ import { exportDesignEvidence, exportGenericObj } from "../../utils/revit-handof
 import { Button, EmptyState, Score, Section, SectionHeading, SourceChip } from "../shared/ui";
 import { ProgramPlanDiagram } from "./ProgramPlanDiagram";
 import { SiteFitAdvisor } from "./SiteFitAdvisor";
+import { SubdivisionDesigner } from "./SubdivisionDesigner";
 
 function NumberField({ label, value, onChange, suffix }: { label: string; value: number; onChange(value: number): void; suffix?: string }) {
   return <label className="field"><span>{label}</span><div className="field-input"><input type="number" value={value} onChange={(event) => onChange(Number(event.target.value))} />{suffix && <b>{suffix}</b>}</div></label>;
@@ -150,10 +151,21 @@ export function DesignTab() {
   const candidateStatus = useSiteMorphStore((state) => state.candidateStatus);
   const generatedBuilding = useSiteMorphStore((state) => state.generatedBuilding);
   const buildingStatus = useSiteMorphStore((state) => state.buildingStatus);
+  const designMode = useSiteMorphStore((state) => state.designMode);
+  const subdivisionBrief = useSiteMorphStore((state) => state.subdivisionBrief);
+  const subdivisionPlan = useSiteMorphStore((state) => state.subdivisionPlan);
+  const selectedSubdivisionVariantId = useSiteMorphStore((state) => state.selectedSubdivisionVariantId);
+  const subdivisionStatus = useSiteMorphStore((state) => state.subdivisionStatus);
+  const generatedSubdivision = useSiteMorphStore((state) => state.generatedSubdivision);
+  const setDesignMode = useSiteMorphStore((state) => state.setDesignMode);
   const updateBrief = useSiteMorphStore((state) => state.updateBrief);
   const updateProgram = useSiteMorphStore((state) => state.updateProgram);
   const generateCandidates = useSiteMorphStore((state) => state.generateCandidates);
   const generateBuilding = useSiteMorphStore((state) => state.generateBuilding);
+  const updateSubdivisionBrief = useSiteMorphStore((state) => state.updateSubdivisionBrief);
+  const generateSubdivisionOptions = useSiteMorphStore((state) => state.generateSubdivisionOptions);
+  const selectSubdivisionVariant = useSiteMorphStore((state) => state.selectSubdivisionVariant);
+  const generateSubdivision = useSiteMorphStore((state) => state.generateSubdivision);
   const applySiteFitOption = useSiteMorphStore((state) => state.applySiteFitOption);
   const selectedSiteFitOptionId = useSiteMorphStore((state) => state.selectedSiteFitOptionId);
   const setActiveTab = useSiteMorphStore((state) => state.setActiveTab);
@@ -173,9 +185,48 @@ export function DesignTab() {
   const testPlacementLabel = isConfirmedAccessRoad(brief.preferredAccessRoad)
     ? "north-west placement · stated access considered"
     : "north-west concept placement · access unconfirmed";
+  const modeSwitch = <div className="design-mode-switch" role="tablist" aria-label="Design workflow">
+    <button role="tab" aria-selected={designMode === "single-building"} className={designMode === "single-building" ? "active" : ""} onClick={() => setDesignMode("single-building")}><Building2 size={16} /><span><b>Single building</b><small>Measured Forma loop</small></span></button>
+    <button role="tab" aria-selected={designMode === "subdivision"} className={designMode === "subdivision" ? "active" : ""} onClick={() => setDesignMode("subdivision")}><LayoutGrid size={16} /><span><b>Subdivision</b><small>FortyGuard-weighted options</small></span></button>
+  </div>;
+
+  if (designMode === "subdivision") {
+    const nativeAnalysisStatus = generatedSubdivision?.nativeAnalysis.status === "succeeded"
+      ? "completed"
+      : generatedSubdivision?.nativeAnalysis.status;
+    return <div className="tab-content">
+      {modeSwitch}
+      <SubdivisionDesigner
+        brief={subdivisionBrief}
+        climate={climate}
+        plan={subdivisionPlan}
+        selectedVariantId={selectedSubdivisionVariantId}
+        status={subdivisionStatus}
+        generatedResult={generatedSubdivision ? {
+          variantId: generatedSubdivision.variantId,
+          createdDwellingCount: generatedSubdivision.elements.length,
+          nativeElementCount: generatedSubdivision.elementPaths.length,
+          persistentContext: {
+            treeCount: generatedSubdivision.persistentContext.treeCount,
+            roadFeatureCount: generatedSubdivision.persistentContext.roadFeatureCount,
+            pedestrianPathFeatureCount: generatedSubdivision.persistentContext.pedestrianPathFeatureCount,
+            openSpaceFeatureCount: generatedSubdivision.persistentContext.openSpaceFeatureCount,
+            lotOutlineFeatureCount: generatedSubdivision.persistentContext.lotOutlineFeatureCount,
+          },
+          nativeAnalysisStatus,
+          message: `${generatedSubdivision.terrainVerificationCount} dwelling and ${generatedSubdivision.persistentContext.treeTerrainVerificationCount} tree terrain placements verified. Refresh-safe road, path, green and lot context persisted. ${generatedSubdivision.nativeAnalysis.note}`,
+        } : null}
+        onBriefUpdate={updateSubdivisionBrief}
+        onGenerateOptions={() => void generateSubdivisionOptions()}
+        onSelectVariant={selectSubdivisionVariant}
+        onBuildSelected={() => void generateSubdivision()}
+      />
+    </div>;
+  }
 
   return (
     <div className="tab-content">
+      {modeSwitch}
       <div className="intro-row"><div><p className="eyebrow">Climate-to-design agent</p><h2>Generate one building</h2><p>{appConfig.mockMode ? "Demo requirements and precomputed options." : "Turn the Climate Design Brief into actual Forma geometry, validate it with native sun analysis, and revise it once."}</p></div></div>
       <div className="brief-confidence"><span>Thermal zoning confidence</span><strong className={climate.designBrief.thermalZoningConfidence === "LOW" ? "risk-high" : "risk-low"}>{climate.designBrief.thermalZoningConfidence}</strong></div>
       {siteFitAssessment && <SiteFitAdvisor assessment={siteFitAssessment} selectedOptionId={selectedSiteFitOptionId} onSelect={applySiteFitOption} onManual={() => {

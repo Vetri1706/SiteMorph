@@ -14,6 +14,9 @@
   "geometry": {
     "elementPath": "urn:adsk-forma:project/prj_south_phoenix_01/proposal/baseline/site-limit/site_limit_42",
     "pointCount": 42,
+    "localBoundary": [[0,0],[220,0],[220,151.76],[0,151.76],[0,0]],
+    "areaSqFt": 359376,
+    "areaAcres": 8.25,
     "centroid": { "longitude": -112.0699, "latitude": 33.3857 },
     "bounds": { "north": 33.3892, "east": -112.0651, "south": 33.3821, "west": -112.0746 },
     "geojson": {

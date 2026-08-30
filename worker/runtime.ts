@@ -342,7 +342,8 @@ function allowedOrigins(request: Request, env: HostedEnv): Set<string> {
   return new Set([current, "http://127.0.0.1:4173", ...configured]);
 }
 
-function errorCode(status: number, message: string): string {
+function errorCode(status: number, message: string, backendCode?: string): string {
+  if (backendCode === "NO_THERMAL_COVERAGE" || message.includes("returned no thermal cells")) return "NO_THERMAL_COVERAGE";
   if (status === 404 && message.includes("No complete saved analysis")) return "SAVED_ANALYSIS_MISSING";
   if (status === 504 || message.includes("still processing") || message.includes("still running")) return "JOB_PENDING";
   if (status === 409) return "ACTIVITY_LIMIT";
@@ -362,13 +363,15 @@ async function normalizedBackendResponse(response: Response, origin?: string): P
     }
     return new Response(response.body, { status: response.status, headers });
   }
-  const payload = await response.json().catch(() => ({})) as { error?: string };
+  const payload = await response.json().catch(() => ({})) as { code?: string; error?: string };
   const raw = payload.error ?? "Site analysis failed";
-  const code = errorCode(response.status, raw);
+  const code = errorCode(response.status, raw, payload.code);
   const safeMessage = code === "FORTYGUARD_UPSTREAM_ERROR"
     ? "FortyGuard could not complete this analysis. No automatic resubmission will occur."
     : code === "JOB_PENDING"
       ? "The SiteMorph request has stopped. FortyGuard is still processing saved activities; check again later without starting new ones."
+      : code === "NO_THERMAL_COVERAGE"
+        ? "FortyGuard returned no thermal cells for this Site Limit. SiteMorph preserved the saved activity IDs, skipped dependent metrics, and will not resubmit them. Select another Site Limit or treat this as a provider coverage gap."
       : raw.replaceAll(/\s*\([A-Za-z0-9_-]{12,}\)/g, "");
   return json(response.status, { code, error: safeMessage }, origin);
 }

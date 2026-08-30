@@ -3,9 +3,10 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
 import type { Feature, FeatureCollection, Polygon } from "geojson";
-import type { ClimateDNA, FortyGuardUsage, RiskLevel, SiteAnalysisResponse } from "../src/types";
-import { activityCacheKey, analysisCacheKey } from "./cache-key";
-import { rankThermalTiles } from "./ranking";
+import type { ClimateDNA, FortyGuardUsage, RiskLevel, SiteAnalysisResponse } from "../src/types/index.ts";
+import { activityCacheKey, analysisCacheKey } from "./cache-key.ts";
+import { classifyOptionalEvidenceFailure, requiredNewActivityCount } from "./full-evidence-policy.ts";
+import { rankThermalTiles } from "./ranking.ts";
 
 type AnalyticType = "tcm" | "persistence" | "exceedance" | "time_of_measure";
 
@@ -76,10 +77,12 @@ interface OptionalEvidenceResult {
 
 class HttpError extends Error {
   status: number;
+  code?: string;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -288,14 +291,53 @@ function createClimateDesignBrief(climateDNA: ClimateDNA, separable: boolean): C
 }
 
 function normalizeMapData(value: unknown): FeatureCollection<Polygon> {
-  const parsed = typeof value === "string" ? JSON.parse(value) as unknown : value;
-  if (!parsed || typeof parsed !== "object" || (parsed as { type?: string }).type !== "FeatureCollection") {
-    throw new HttpError(502, "FortyGuard completed without GeoJSON map_data");
+  let parsed: unknown;
+  try {
+    parsed = typeof value === "string" ? JSON.parse(value) as unknown : value;
+  } catch {
+    throw new HttpError(502, "FortyGuard completed with malformed GeoJSON map_data", "MALFORMED_MAP_DATA");
   }
-  const features = (parsed as FeatureCollection).features.filter(
-    (feature): feature is Feature<Polygon> => feature.geometry?.type === "Polygon",
-  );
-  if (!features.length) throw new HttpError(502, "FortyGuard map_data contains no polygon tiles");
+  if (!parsed || typeof parsed !== "object" || (parsed as { type?: string }).type !== "FeatureCollection") {
+    throw new HttpError(502, "FortyGuard completed without GeoJSON map_data", "MALFORMED_MAP_DATA");
+  }
+  const collection = parsed as FeatureCollection;
+  if (!Array.isArray(collection.features)) {
+    throw new HttpError(502, "FortyGuard map_data has no readable feature array", "MALFORMED_MAP_DATA");
+  }
+  if (collection.features.length === 0) {
+    throw new HttpError(
+      422,
+      "FortyGuard returned no thermal cells for this Site Limit. The saved activity ID was preserved and will not be resubmitted.",
+      "NO_THERMAL_COVERAGE",
+    );
+  }
+  const features: Feature<Polygon>[] = [];
+  const unsupportedGeometryTypes = new Set<string>();
+  collection.features.forEach((feature) => {
+    if (feature?.geometry?.type === "Polygon") {
+      features.push(feature as Feature<Polygon>);
+      return;
+    }
+    if (feature?.geometry?.type === "MultiPolygon") {
+      feature.geometry.coordinates.forEach((coordinates, index) => {
+        features.push({
+          type: "Feature",
+          properties: feature.properties ?? {},
+          ...(feature.id !== undefined ? { id: `${feature.id}:${index}` } : {}),
+          geometry: { type: "Polygon", coordinates },
+        });
+      });
+      return;
+    }
+    unsupportedGeometryTypes.add(feature?.geometry?.type ?? "missing");
+  });
+  if (!features.length) {
+    throw new HttpError(
+      502,
+      `FortyGuard map_data used unsupported geometry types: ${[...unsupportedGeometryTypes].sort().join(", ")}`,
+      "UNSUPPORTED_MAP_GEOMETRY",
+    );
+  }
   return { type: "FeatureCollection", features };
 }
 
@@ -411,7 +453,14 @@ function validateGeometry(feature: Feature<Polygon> | undefined): FeatureCollect
 }
 
 type CachedActivityKind = "heat" | "optional";
-type CachedActivityStatus = "pending" | "completed" | "failed";
+type CachedActivityStatus = "pending" | "completed" | "failed" | "unavailable";
+
+interface ActivityDiagnostics {
+  mapType: "FeatureCollection";
+  featureCount: number;
+  geometryTypes: string[];
+  nCells?: number;
+}
 
 interface PersistedActivityEntry {
   schema: "sitemorph.fortyguard-activity.v1";
@@ -423,14 +472,20 @@ interface PersistedActivityEntry {
   savedAt: string;
   result?: FortyGuardResult | OptionalEvidenceResult;
   error?: string;
+  code?: string;
+  httpStatus?: number;
+  diagnostics?: ActivityDiagnostics;
 }
 
 const ACTIVITY_CACHE_DIR = resolve(process.cwd(), ".sitemorph-cache", "fortyguard-activities");
 
 class ActivityBudget {
   private submitted = 0;
+  private readonly maximum: number;
 
-  constructor(private readonly maximum: number) {}
+  constructor(maximum: number) {
+    this.maximum = maximum;
+  }
 
   claim(label: string): void {
     if (this.submitted >= this.maximum) {
@@ -560,6 +615,13 @@ async function runAnalysis(
   if (cached?.status === "failed") {
     throw new HttpError(502, cached.error ?? `Saved FortyGuard ${analyticType} activity failed`);
   }
+  if (cached?.status === "unavailable") {
+    throw new HttpError(
+      cached.httpStatus ?? 422,
+      cached.error ?? `Saved FortyGuard ${analyticType} activity has no thermal coverage`,
+      cached.code ?? "NO_THERMAL_COVERAGE",
+    );
+  }
 
   let activityId = cached?.activityId;
   let credentialSlot = cached?.credentialSlot;
@@ -639,11 +701,35 @@ async function runAnalysis(
     }
     if (status === "completed" || status === "succeeded") {
       const result = data?.result as Record<string, unknown> | undefined;
-      const completed: FortyGuardResult = {
-        activityId,
-        mapData: normalizeMapData(result?.map_data),
-        statsData: (result?.stats_data as Record<string, unknown> | undefined) ?? {},
-      };
+      const statsData = (result?.stats_data as Record<string, unknown> | undefined) ?? {};
+      let mapData: FeatureCollection<Polygon>;
+      try {
+        mapData = normalizeMapData(result?.map_data);
+      } catch (error) {
+        if (error instanceof HttpError && error.code === "NO_THERMAL_COVERAGE") {
+          const nCells = findNumber(statsData, ["n_cells", "cell_count", "cells"]);
+          await writePersistedActivity({
+            schema: "sitemorph.fortyguard-activity.v1",
+            key,
+            kind: "heat",
+            status: "unavailable",
+            activityId,
+            credentialSlot,
+            savedAt: new Date().toISOString(),
+            error: error.message,
+            code: error.code,
+            httpStatus: error.status,
+            diagnostics: {
+              mapType: "FeatureCollection",
+              featureCount: 0,
+              geometryTypes: [],
+              ...(nCells !== undefined ? { nCells } : {}),
+            },
+          });
+        }
+        throw error;
+      }
+      const completed: FortyGuardResult = { activityId, mapData, statsData };
       await writePersistedActivity({ schema: "sitemorph.fortyguard-activity.v1", key, kind: "heat", status: "completed", activityId, credentialSlot, savedAt: new Date().toISOString(), result: completed });
       return completed;
     }
@@ -858,13 +944,16 @@ async function analyzeSite(body: AnalyzeBody, config: FortyGuardConfig): Promise
   const thresholdCelsius = body.thresholdCelsius ?? 35;
   if (!config.analysisDates.length) throw new HttpError(503, "No representative FortyGuard analysis dates are configured");
   const missingHeatActivities = await countMissingHeatActivities(config.analysisDates, polygonAoi.features[0], thresholdCelsius, config);
-  const optionalReserve = config.includeOptionalEvidence ? 3 : 0;
+  // Cache-only checks may poll already-saved enrichment activities but must
+  // never reserve or submit missing ones. A paid continuation can submit only
+  // the still-missing pieces of the same first full-evidence run.
   const activityLimit = body.cacheOnly ? 0 : config.maxNewActivities;
   const pollAttempts = body.cacheOnly ? 1 : config.maxPollAttempts;
-  if (missingHeatActivities + optionalReserve > activityLimit) {
+  const requiredNewActivities = requiredNewActivityCount(missingHeatActivities, config.includeOptionalEvidence, body.cacheOnly === true);
+  if (requiredNewActivities > activityLimit) {
     const message = body.cacheOnly
-      ? `No complete saved analysis exists yet. ${missingHeatActivities + optionalReserve} activities have not been submitted; no FortyGuard request was started.`
-      : `Credit Saver blocked this run before submission: ${missingHeatActivities + optionalReserve} new FortyGuard activities are required, above the configured limit of ${activityLimit}.`;
+      ? `No complete saved analysis exists yet. ${requiredNewActivities} activities have not been submitted; no FortyGuard request was started.`
+      : `Credit Saver blocked this run before submission: ${requiredNewActivities} new FortyGuard activities are required, above the configured limit of ${activityLimit}.`;
     throw new HttpError(body.cacheOnly ? 404 : 409, message);
   }
   const budget = new ActivityBudget(activityLimit);
@@ -880,6 +969,7 @@ async function analyzeSite(body: AnalyzeBody, config: FortyGuardConfig): Promise
   }));
   const history: HistoricalResult[] = [];
   let pendingCount = 0;
+  let noCoverageCount = 0;
   let firstHardFailure: unknown;
   for (const sample of settledHistory) {
     const results = {} as Record<AnalyticType, FortyGuardResult>;
@@ -892,6 +982,8 @@ async function analyzeSite(body: AnalyzeBody, config: FortyGuardConfig): Promise
       const message = settled.reason instanceof Error ? settled.reason.message : String(settled.reason);
       if ((settled.reason instanceof HttpError && settled.reason.status === 504) || message.includes("still running")) {
         pendingCount += 1;
+      } else if (settled.reason instanceof HttpError && settled.reason.code === "NO_THERMAL_COVERAGE") {
+        noCoverageCount += 1;
       } else if (firstHardFailure === undefined) {
         firstHardFailure = settled.reason;
       }
@@ -901,6 +993,15 @@ async function analyzeSite(body: AnalyzeBody, config: FortyGuardConfig): Promise
     }
   }
   if (firstHardFailure !== undefined) throw firstHardFailure;
+  if (noCoverageCount > 0) {
+    const total = config.analysisDates.length * analyticTypes.length;
+    const scope = noCoverageCount === total ? `all ${total}` : `${noCoverageCount} of ${total}`;
+    throw new HttpError(
+      422,
+      `FortyGuard returned no thermal cells for ${scope} saved thermal activities for this Site Limit. SiteMorph preserved their activity IDs, skipped dependent metrics, and will not resubmit them. Select another Site Limit or treat this as a provider coverage gap.`,
+      "NO_THERMAL_COVERAGE",
+    );
+  }
   if (pendingCount > 0) {
     throw new HttpError(409, `FortyGuard is still processing ${pendingCount} of ${config.analysisDates.length * analyticTypes.length} saved thermal activities. The SiteMorph request has stopped; check the saved result again without starting new activities.`);
   }
@@ -913,7 +1014,7 @@ async function analyzeSite(body: AnalyzeBody, config: FortyGuardConfig): Promise
   const latitude = mean(openRing.map((point) => point[1]));
   const northLatitude = Math.max(...openRing.map((point) => point[1]));
   if (config.includeOptionalEvidence) {
-    const [environmental, satellite, street] = await Promise.allSettled([
+    const optionalResults = await Promise.allSettled([
       runOptionalEvidence("/env_params", "environmental parameters", {
         latitude,
         longitude,
@@ -933,6 +1034,29 @@ async function analyzeSite(body: AnalyzeBody, config: FortyGuardConfig): Promise
         back_view: true,
       }, polygonAoi.features[0], config, budget),
     ]);
+    const [environmental, satellite, street] = optionalResults;
+    let pendingOptionalCount = 0;
+    let missingOptionalCount = 0;
+    optionalResults.forEach((result) => {
+      if (result.status !== "rejected") return;
+      const kind = classifyOptionalEvidenceFailure(result.reason);
+      if (kind === "pending") pendingOptionalCount += 1;
+      if (kind === "missing") missingOptionalCount += 1;
+    });
+    if (pendingOptionalCount > 0) {
+      throw new HttpError(
+        409,
+        `FortyGuard is still processing ${pendingOptionalCount} saved full-evidence activities. Check again to resume their saved IDs without another submission.`,
+        "JOB_PENDING",
+      );
+    }
+    if (missingOptionalCount > 0) {
+      throw new HttpError(
+        404,
+        `No complete saved analysis exists yet. ${missingOptionalCount} full-evidence activities have not been submitted; no FortyGuard request was started.`,
+        "SAVED_ANALYSIS_MISSING",
+      );
+    }
     if (environmental.status === "fulfilled") {
       applyEnvironmentalEvidence(normalized.climateDNA, environmental.value);
       if (normalized.climateDNA.activityIds) normalized.climateDNA.activityIds.environmental = environmental.value.activityId;
@@ -1203,8 +1327,9 @@ export function createSiteAnalyzeMiddleware(config: FortyGuardConfig) {
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500;
       const message = error instanceof Error ? error.message : "Site analysis failed";
+      const code = error instanceof HttpError ? error.code : undefined;
       console.warn("[SiteMorph analysis] request ended with error", { requestId, cacheOnly, status, durationMs: Date.now() - startedAt, message });
-      sendJson(response, status, { error: message });
+      sendJson(response, status, { ...(code ? { code } : {}), error: message });
     }
   };
 }

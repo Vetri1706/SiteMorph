@@ -1,12 +1,12 @@
 [
   { "id": "t1", "timestamp": "22:41:03", "type": "Observation", "title": "Read Forma site boundary", "detail": "42 geometry points normalized to GeoJSON.", "source": "forma" },
   { "id": "t2", "timestamp": "22:41:04", "type": "Tool Call", "title": "Requested FortyGuard TCM heatmap", "detail": "60 m resolution · Jul 2024 – Aug 2026", "activityId": "fg_act_9c2a14d8", "source": "fortyguard" },
-  { "id": "t3", "timestamp": "22:41:08", "type": "Result", "title": "Detected persistent western hotspot", "detail": "South-west tiles show the longest continuous elevated-heat duration.", "source": "fortyguard" },
+  { "id": "t3", "timestamp": "22:41:08", "type": "Result", "title": "Observed site-wide persistent heat", "detail": "The real 60 m cells do not show meaningful within-site thermal separation.", "source": "fortyguard" },
   { "id": "t4", "timestamp": "22:41:08", "type": "Decision", "title": "Need surface explanation", "reason": "The heat signal alone does not explain which site surfaces may contribute to persistence.", "source": "sitemorph" },
   { "id": "t5", "timestamp": "22:41:09", "type": "Tool Call", "title": "Requested satellite segmentation", "activityId": "fg_act_42fc8810", "source": "fortyguard" },
   { "id": "t6", "timestamp": "22:41:13", "type": "Result", "title": "Found 72% impervious coverage", "detail": "Combined building, road, and pavement segmentation.", "source": "fortyguard" },
   { "id": "t7", "timestamp": "22:41:14", "type": "Decision", "title": "Need pedestrian-level context", "reason": "Street context could qualify shade and openness along the access edge.", "source": "sitemorph" },
   { "id": "t8", "timestamp": "22:41:14", "type": "Tool Call", "title": "Requested street-view segmentation", "activityId": "fg_act_a2bd1374", "source": "fortyguard" },
   { "id": "t9", "timestamp": "22:41:19", "type": "Result", "title": "Street imagery unavailable", "detail": "Analysis continued without street-level context.", "source": "fortyguard" },
-  { "id": "t10", "timestamp": "22:41:20", "type": "Recommendation", "title": "Prioritize the north-east build zone", "detail": "Place heat-sensitive operations in Zone A; use the western edge for buffer functions.", "source": "sitemorph" }
+  { "id": "t10", "timestamp": "22:41:20", "type": "Recommendation", "title": "Apply heat constraints site-wide", "detail": "The parcel is thermally uniform at FortyGuard resolution. Let Forma optimize internal placement without an invented compass preference.", "source": "sitemorph" }
 ]

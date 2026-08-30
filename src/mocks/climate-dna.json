@@ -4,10 +4,9 @@
   "activityId": "fg_act_9c2a14d8",
   "profile": {
     "thermalExposure": "HIGH",
-    "persistence": "MODERATE",
+    "persistence": "HIGH",
     "vegetation": "LOW",
-    "solarBurden": "HIGH",
-    "recommendedBuildZone": "NORTH-EAST"
+    "solarBurden": "HIGH"
   },
   "layers": [
     { "id": "temperature", "name": "Temperature", "description": "Historical land-surface temperature", "available": true, "unit": "°C", "overlayType": "mock" },
@@ -20,17 +19,18 @@
     { "id": "environmental", "name": "Environmental Context", "description": "Humidity, heat index, clouds, and precipitation", "available": true, "overlayType": "mock" }
   ],
   "thermal": {
-    "meanCelsius": 39.2,
-    "maxCelsius": 46.8,
-    "minCelsius": 28.4,
-    "peakThermalHour": "9:00 PM MST",
-    "peakThermalHourUtc": "04:00 UTC",
+    "meanCelsius": 37.5,
+    "maxCelsius": 42.5,
+    "minCelsius": 28.7,
+    "peakThermalHour": "11:00 PM MST",
+    "peakThermalHourUtc": "06:00 UTC",
     "peakThermalTimeZone": "America/Phoenix",
     "thresholdCelsius": 35,
-    "hoursAboveThreshold": 612,
-    "longestPersistenceHours": 7,
-    "hotZonePercent": 38,
-    "coolZonePercent": 16
+    "hoursAboveThreshold": 18.7,
+    "meanPersistenceHours": 18.3,
+    "longestPersistenceHours": 24,
+    "hotZonePercent": 0,
+    "coolZonePercent": 0
   },
   "environmental": {
     "relativeHumidityPercent": 22,
@@ -77,36 +77,12 @@
     "siteWideConstraints": ["Do not spatially zone the building from FortyGuard alone.", "Shade loading and worker areas.", "Reduce exposed pavement."],
     "formaActions": ["Generate one building mass.", "Run Forma sun analysis.", "Validate wind and microclimate.", "Revise the mass once."]
   },
-  "zones": [
-    {
-      "id": "zone-a", "name": "ZONE A", "direction": "North-East", "climateSuitability": 86,
-      "evidence": ["Low persistent heat", "Moderate solar exposure", "Existing vegetation"],
-      "recommendedFor": ["Cold storage", "Offices", "Heat-sensitive operations"],
-      "elementPath": "overlay/site_limit_42/zone-a", "sourceTileIds": ["fg_60m_2281", "fg_60m_2282"]
-    },
-    {
-      "id": "zone-b", "name": "ZONE B", "direction": "Central", "climateSuitability": 68,
-      "evidence": ["Moderate heat persistence", "Clear access geometry", "Limited existing canopy"],
-      "recommendedFor": ["Dry storage", "Packing", "Circulation"],
-      "elementPath": "overlay/site_limit_42/zone-b", "sourceTileIds": ["fg_60m_2290", "fg_60m_2291"]
-    },
-    {
-      "id": "zone-c", "name": "ZONE C", "direction": "South-West", "climateSuitability": 41,
-      "evidence": ["Persistent afternoon heat", "Low canopy", "High impervious coverage"],
-      "recommendedFor": ["Service core", "Parking", "Utilities", "Thermal-buffer functions"],
-      "elementPath": "overlay/site_limit_42/zone-c", "sourceTileIds": ["fg_60m_2302", "fg_60m_2303"]
-    }
-  ],
+  "zones": [],
   "constraints": [
-    { "id": "c1", "category": "Placement", "title": "Preferred development zone", "value": "North-East", "why": "Zone A has the lowest measured persistence and the strongest existing vegetation signal in the analyzed site tiles.", "evidenceIds": ["zone-a","fg_60m_2281"] },
-    { "id": "c2", "category": "Placement", "title": "Avoid zone", "value": "South-West for heat-sensitive uses", "why": "Zone C combines persistent afternoon heat with low canopy and high impervious coverage.", "evidenceIds": ["zone-c","fg_60m_2302"] },
-    { "id": "c3", "category": "Placement", "title": "Thermal buffer zone", "value": "Western site edge", "why": "Locating support uses along the western edge buffers occupied and temperature-sensitive program from peak afternoon exposure.", "evidenceIds": ["zone-c"] },
-    { "id": "c4", "category": "Building", "title": "Preferred orientation", "value": "8°–18° north-east", "why": "This aligns the largest program area with the cooler ranked zone while preserving the recorded access edge.", "evidenceIds": ["zone-a","site_limit_42"] },
-    { "id": "c5", "category": "Building", "title": "Sensitive-space placement", "value": "Cold storage and offices to the north-east", "why": "Zone A shows lower heat persistence than the western site edge and contains greater vegetation coverage.", "evidenceIds": ["zone-a","zone-c"] },
-    { "id": "c6", "category": "Building", "title": "Service-core placement", "value": "Western edge", "why": "The service core can act as a thermal buffer in the least suitable occupied zone.", "evidenceIds": ["zone-c"] },
-    { "id": "c7", "category": "Building", "title": "Loading / logistics placement", "value": "South and west access edges", "why": "Keeps vehicle-intensive program away from the recommended heat-sensitive build zone.", "evidenceIds": ["zone-a","zone-c"] },
-    { "id": "c8", "category": "Envelope / Landscape", "title": "Shading priority", "value": "West façade and loading apron", "why": "Peak thermal load occurs around 16:00 and the south-west tiles show the longest heat persistence.", "evidenceIds": ["fg_60m_2302","thermal_peak_1600"] },
-    { "id": "c9", "category": "Envelope / Landscape", "title": "Impervious-surface reduction", "value": "South-West apron and parking", "why": "Satellite segmentation measures 72% combined building, road, and pavement coverage.", "evidenceIds": ["surface_impervious_72"] }
+    { "id": "c1", "category": "Placement", "title": "Thermal placement rule", "value": "No parcel sub-zone preference", "why": "FortyGuard is spatially uniform at the parcel scale, so heat constraints apply site-wide.", "evidenceIds": ["site_limit_42"] },
+    { "id": "c2", "category": "Building", "title": "Cooling resilience", "value": "Critical", "why": "The historical evidence records 24 hours maximum continuous persistence.", "evidenceIds": ["fg_act_9c2a14d8"] },
+    { "id": "c3", "category": "Envelope / Landscape", "title": "Canopy and shade", "value": "High priority", "why": "The parcel has high persistent heat and limited canopy evidence.", "evidenceIds": ["surface_impervious_72"] },
+    { "id": "c4", "category": "Envelope / Landscape", "title": "Impervious-surface reduction", "value": "Measure before design freeze", "why": "Satellite segmentation records high combined building, road, and pavement coverage.", "evidenceIds": ["surface_impervious_72"] }
   ],
   "provenance": {
     "thermal": { "source": "fortyguard", "label": "FortyGuard TCM heat model", "dateRange": "Jul 2024 – Aug 2026", "resolution": "60 m", "confidence": "Direct model output" },
@@ -114,6 +90,6 @@
     "solar": { "source": "fortyguard", "label": "FortyGuard solar context", "dateRange": "Jul 2024 – Aug 2026", "resolution": "Hourly", "confidence": "Direct model output" },
     "surface": { "source": "fortyguard", "label": "FortyGuard satellite segmentation", "dateRange": "Aug 2026", "resolution": "10 m", "confidence": "Model segmentation" },
     "street": { "source": "fortyguard", "label": "FortyGuard street segmentation", "dateRange": "Unavailable", "confidence": "Skipped — imagery unavailable" },
-    "zones": { "source": "sitemorph", "label": "SiteMorph climate suitability", "dateRange": "Aug 2026", "resolution": "60 m tiles", "confidence": "Derived score", "derivedFrom": ["thermal persistence","solar exposure","surface segmentation"] }
+    "zones": { "source": "sitemorph", "label": "Site-wide thermal treatment", "dateRange": "Aug 2026", "resolution": "60 m tiles", "confidence": "LOW — no reliable within-site separation", "derivedFrom": ["thermal persistence","exceedance","time_of_measure"] }
   }
 }

@@ -118,16 +118,19 @@ function installFortyGuardMock(options = {}) {
       const properties = analytic === "tcm"
         ? { average_temperature: 37.5, max_temperature: 42.5, min_temperature: 28.7 }
         : { value };
-      const map_data = {
-        type: "FeatureCollection",
-        features: [{
+      const polygonCoordinates = [[[-112.1, 33.4], [-112.099, 33.4], [-112.099, 33.401], [-112.1, 33.401], [-112.1, 33.4]]];
+      const features = options.mapDataMode === "empty"
+        ? []
+        : [{
           type: "Feature",
           properties,
-          geometry: {
-            type: "Polygon",
-            coordinates: [[[-112.1, 33.4], [-112.099, 33.4], [-112.099, 33.401], [-112.1, 33.401], [-112.1, 33.4]]],
-          },
-        }],
+          geometry: options.mapDataMode === "multi-polygon"
+            ? { type: "MultiPolygon", coordinates: [polygonCoordinates] }
+            : { type: "Polygon", coordinates: polygonCoordinates },
+        }];
+      const map_data = {
+        type: "FeatureCollection",
+        features,
       };
       return Response.json({ data: { status: "completed", result: { map_data, stats_data: {} } } });
     }
@@ -207,6 +210,47 @@ test("pending saved activities are swept once per request and never resubmitted"
     assert.equal((await completed.json()).cache.source, "live");
     assert.equal(mock.submissions.length, 12);
     assert.equal(mock.statusKeys.length, 36);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("completed activities with zero cells become terminal coverage gaps and are never resubmitted", async () => {
+  const cache = new MemoryR2();
+  const env = hostedEnv(cache);
+  const mock = installFortyGuardMock({ mapDataMode: "empty" });
+  try {
+    const first = await worker.fetch(requestFor(polygon(-112.155), false), env);
+    assert.equal(first.status, 422, await first.clone().text());
+    const firstPayload = await first.json();
+    assert.equal(firstPayload.code, "NO_THERMAL_COVERAGE");
+    assert.match(firstPayload.error, /no thermal cells/i);
+    assert.equal(mock.submissions.length, 12);
+    assert.equal(mock.statusKeys.length, 12);
+    const activityRecords = cache.jsonValuesContaining("fortyguard-activities");
+    assert.equal(activityRecords.length, 12);
+    assert.ok(activityRecords.every((entry) => entry.status === "unavailable"));
+    assert.ok(activityRecords.every((entry) => entry.code === "NO_THERMAL_COVERAGE"));
+    assert.ok(activityRecords.every((entry) => entry.diagnostics?.featureCount === 0));
+
+    const retry = await worker.fetch(requestFor(polygon(-112.155), true), env);
+    assert.equal(retry.status, 422, await retry.clone().text());
+    assert.equal((await retry.json()).code, "NO_THERMAL_COVERAGE");
+    assert.equal(mock.submissions.length, 12);
+    assert.equal(mock.statusKeys.length, 12);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("valid MultiPolygon heatmap tiles are normalized without discarding provider data", async () => {
+  const cache = new MemoryR2();
+  const mock = installFortyGuardMock({ mapDataMode: "multi-polygon" });
+  try {
+    const response = await worker.fetch(requestFor(polygon(-112.157), false), hostedEnv(cache));
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.equal((await response.json()).cache.source, "live");
+    assert.equal(mock.submissions.length, 12);
   } finally {
     mock.restore();
   }
@@ -298,6 +342,29 @@ test("a definitively exhausted primary key rolls over to the first fallback with
     const blocked = await worker.fetch(requestFor(polygon(-112.6), false), env);
     assert.equal(blocked.status, 429);
     assert.equal(mock.submissions.length, 12);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("definitive exhaustion advances through both ordered fallbacks and stops at the first usable key", async () => {
+  const cache = new MemoryR2();
+  const env = hostedEnv(cache, { FORTYGUARD_FALLBACK_API_KEYS: "ordered-fallback-one,ordered-fallback-two" });
+  const mock = installFortyGuardMock({
+    enforceActivityKeyOwnership: true,
+    interceptSubmission: ({ apiKey }) => ["test-key-not-a-secret", "ordered-fallback-one"].includes(apiKey)
+      ? Response.json({ message: "Credit balance exhausted" }, { status: 403 })
+      : undefined,
+  });
+  try {
+    const response = await worker.fetch(requestFor(polygon(-112.51), false), env);
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.equal(mock.submissions.length, 12);
+    assert.ok(mock.attemptedSubmissionKeys.includes("test-key-not-a-secret"));
+    assert.ok(mock.attemptedSubmissionKeys.includes("ordered-fallback-one"));
+    assert.deepEqual([...new Set(mock.submissionKeys)], ["ordered-fallback-two"]);
+    assert.deepEqual([...new Set(mock.statusKeys)], ["ordered-fallback-two"]);
+    assert.ok(cache.jsonValuesContaining("fortyguard-activities").every((entry) => entry.credentialSlot === 2));
   } finally {
     mock.restore();
   }

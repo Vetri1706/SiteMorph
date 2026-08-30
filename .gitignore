@@ -1,6 +1,15 @@
 node_modules/
 dist/
 .env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.key
+.npmrc
 .sitemorph-cache/
 artifacts/
 promos/

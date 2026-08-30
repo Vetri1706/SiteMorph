@@ -1,9 +1,9 @@
 import proj4 from "proj4";
 import type { Footprint } from "forma-embedded-view-sdk/geometry";
 import type { Project } from "forma-embedded-view-sdk/project";
-import siteMock from "../mocks/site.json";
 import type { GeoJsonPolygon, SiteContext, SiteGeometry } from "../types";
 import { appConfig, delay } from "../utils/config";
+import { mockSiteContext } from "../utils/mock-site";
 
 type FormaClient = typeof import("forma-embedded-view-sdk/auto")["Forma"];
 let formaClientPromise: Promise<FormaClient> | null = null;
@@ -117,7 +117,7 @@ class FormaService implements FormaServiceContract {
   }
 
   async getCurrentProject(): Promise<SiteContext> {
-    if (appConfig.mockMode) return siteMock as SiteContext;
+    if (appConfig.mockMode) return mockSiteContext;
 
     const Forma = await getFormaClient();
     const [project, geoLocation, proposalId] = await Promise.all([
@@ -145,7 +145,7 @@ class FormaService implements FormaServiceContract {
   async readSiteLimit(elementPath: string): Promise<SiteGeometry> {
     if (appConfig.mockMode) {
       await delay(520);
-      return (siteMock as SiteContext).geometry!;
+      return mockSiteContext.geometry!;
     }
 
     const Forma = await getFormaClient();
@@ -172,7 +172,7 @@ class FormaService implements FormaServiceContract {
   }
 
   async getSelectedPaths(): Promise<string[]> {
-    if (appConfig.mockMode) return [(siteMock as SiteContext).geometry!.elementPath];
+    if (appConfig.mockMode) return [mockSiteContext.geometry!.elementPath];
     const Forma = await getFormaClient();
     return Forma.selection.getSelection();
   }

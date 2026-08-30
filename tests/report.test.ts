@@ -3,8 +3,12 @@ import test from "node:test";
 import JSZip from "jszip";
 
 import type { ClimateDNA, DesignBrief, GeneratedBuilding, SiteContext, SiteGeometry } from "../src/types/index.ts";
+import type { GeneratedSubdivisionResult } from "../src/services/forma-subdivision.service.ts";
+import { SUBDIVISION_CONTEXT_DISCLAIMER, SUBDIVISION_CONTEXT_MODEL_VERSION } from "../src/services/forma-subdivision-context.service.ts";
+import type { SubdivisionBrief } from "../src/types/subdivision.ts";
 import { createSiteFitAssessment } from "../src/utils/site-fit-advisor.ts";
 import { buildSiteIntelligenceReport } from "../src/utils/site-report.ts";
+import { generateSubdivisionLayouts } from "../src/utils/subdivision-layout.ts";
 
 const site: SiteContext = {
   projectId: "south-phoenix",
@@ -272,4 +276,124 @@ test("retains a valid Wind-only response when Sun metrics are unavailable", asyn
   assert.match(documentXml, /Forma Rapid Wind comfort/);
   assert.match(documentXml, /readable Wind grid only/);
   assert.doesNotMatch(documentXml, /combined response index was omitted/i);
+});
+
+test("documents a built subdivision with exposed FortyGuard multiplication and honest Forma/Revit boundaries", async () => {
+  const subdivisionBrief: SubdivisionBrief = {
+    schemaVersion: "sitemorph.subdivision-brief.v1",
+    id: "report-townhouses",
+    name: "Climate-responsive townhouse neighborhood",
+    dwellingType: "townhouse",
+    targetLotAreaSqFt: 3229.17,
+    minimumLotWidthFt: 32.81,
+    dwellingGfaSqFt: 1899,
+    floors: 2,
+    maxConnectedDwellings: 4,
+    roadWidthFt: 19.69,
+    pedestrianPathWidthFt: 4.92,
+    setbacks: { frontFt: 6.56, sideFt: 3.28, rearFt: 13.12, sitePerimeterFt: 4.92 },
+    openLandTargetPercent: 10,
+    parkingSpacesPerDwelling: 2,
+    treeCanopyTargetPercent: 18,
+  };
+  const subdivisionPlan = generateSubdivisionLayouts(siteGeometry, climate, subdivisionBrief);
+  const selectedVariant = subdivisionPlan.variants.find((variant) => variant.rank === 1)!;
+  const generatedSubdivision: GeneratedSubdivisionResult = {
+    schemaVersion: 3,
+    runId: "subdivision-report-run",
+    variantId: selectedVariant.id,
+    variantLabel: selectedVariant.label,
+    generatedAt: "2026-08-23T00:00:00Z",
+    elementPaths: selectedVariant.dwellings.map((dwelling) => `root/${dwelling.id}`),
+    proposalElementPaths: [
+      ...selectedVariant.dwellings.map((dwelling) => `root/${dwelling.id}`),
+      "root/subdivision-context",
+    ],
+    elements: selectedVariant.dwellings.map((dwelling, index) => ({
+      itemId: dwelling.id,
+      lotId: dwelling.lotId,
+      groupId: dwelling.groupId,
+      elementPath: `root/${dwelling.id}`,
+      name: `SiteMorph — ${selectedVariant.label} · Dwelling ${index + 1}`,
+      footprintSqFt: dwelling.footprintSqFt,
+      grossFloorAreaSqFt: dwelling.grossFloorAreaSqFt,
+      floors: dwelling.floors,
+      heightMeters: dwelling.heightMeters,
+      projectFootprint: dwelling.footprint,
+      footprintSource: "direct-footprint",
+      placement: {
+        terrainBaseElevationMeters: 326.75,
+        terrainSampleCount: 5,
+        expectedCenterXMeters: 50,
+        expectedCenterYMeters: 25,
+        worldTransformXMeters: 50,
+        worldTransformYMeters: 25,
+        worldTransformElevationMeters: 326.75,
+        meshBaseElevationMeters: 326.75,
+        toleranceMeters: 0.25,
+        verifiedAt: "2026-08-23T00:00:00Z",
+      },
+    })),
+    totalGrossFloorAreaSqFt: selectedVariant.metrics.totalDwellingGfaSqFt,
+    terrainSampleCount: selectedVariant.dwellings.length * 5,
+    terrainVerificationCount: selectedVariant.dwellings.length,
+    persistentContext: {
+      elementPath: "root/subdivision-context",
+      name: "SiteMorph — Heat-resilient neighborhood · Persistent planning context",
+      status: "persisted-concept-context",
+      modelVersion: SUBDIVISION_CONTEXT_MODEL_VERSION,
+      persistedAt: "2026-08-23T00:00:00Z",
+      roadFeatureCount: selectedVariant.roads.filter((road) => road.kind === "access-road").length,
+      pedestrianPathFeatureCount: selectedVariant.roads.filter((road) => road.kind === "pedestrian-path").length,
+      openSpaceFeatureCount: selectedVariant.openSpaces.length,
+      lotOutlineFeatureCount: selectedVariant.lots.length,
+      treeCount: selectedVariant.trees.length,
+      treeTerrainSampleCount: selectedVariant.trees.length,
+      treeTerrainVerificationCount: selectedVariant.trees.length,
+      treeTriangleCount: selectedVariant.trees.length * 96,
+      treeModelUrn: "urn:adsk-forma-elements:integrate:test:tree:1",
+      disclaimer: SUBDIVISION_CONTEXT_DISCLAIMER,
+    },
+    removedPreviousPaths: [],
+    nativeAnalysis: {
+      type: "sun",
+      selectedElementPath: siteGeometry.elementPath,
+      status: "succeeded",
+      analysisId: "forma-subdivision-sun-1",
+      metricSource: "ground-grid",
+      meanSunHours: 8.4,
+      maxSunHours: 10.8,
+      note: "Readable native Site-Limit Sun grid.",
+    },
+  };
+
+  const report = await buildSiteIntelligenceReport({
+    climate,
+    site,
+    requirements,
+    building: null,
+    trace: [],
+    subdivisionPlan,
+    selectedSubdivisionVariantId: selectedVariant.id,
+    generatedSubdivision,
+  });
+  const archive = await JSZip.loadAsync(new Uint8Array(await report.arrayBuffer()));
+  const documentXml = await archive.file("word/document.xml")!.async("string");
+
+  assert.match(documentXml, /FortyGuard four-signal historical burden/);
+  assert.match(documentXml, /Hot-season mean temperature/);
+  assert.match(documentXml, /Mean continuous persistence/);
+  assert.match(documentXml, /Maximum continuous persistence/);
+  assert.match(documentXml, /Mean exceedance above/);
+  assert.match(documentXml, /Peak thermal hour - site local/);
+  assert.match(documentXml, /Supporting evidence only - excluded from numerical burden/);
+  assert.match(documentXml, /Weighted geometric mean/);
+  assert.match(documentXml, /Exactly 50% of the option score/);
+  assert.match(documentXml, /Residual heat risk = FortyGuard historical burden/);
+  assert.match(documentXml, /forma-subdivision-sun-1/);
+  assert.match(documentXml, /separate dwelling floor stacks/);
+  assert.match(documentXml, /persistent virtual SiteMorph-authored Forma concept elements/i);
+  assert.match(documentXml, /Persistent planning-context root/);
+  assert.match(documentXml, /low-poly trees/i);
+  assert.match(documentXml, /does not claim that the context root, subdivision lot IDs, dwelling names, rooms, walls, roofs, openings/);
 });

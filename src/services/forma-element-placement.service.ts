@@ -9,6 +9,13 @@ export const SITEMORPH_ELEMENT_NAME_PREFIX = "SiteMorph —";
 export const SITEMORPH_OWNERSHIP_NAMESPACE = "sitemorph:element";
 export const PLACEMENT_ELEVATION_TOLERANCE_METERS = 0.25;
 
+export interface SiteMorphOwnershipMetadata {
+  schemaVersion?: 1 | 2 | 3;
+  runId?: string;
+  role?: string;
+  itemId?: string;
+}
+
 interface PlacementVerificationOptions {
   maxAttempts?: number;
   retryDelayMs?: number;
@@ -61,13 +68,20 @@ export async function listSiteMorphOwnedRootPaths(Forma: PlacementClient): Promi
   return [...new Set(ownedPaths.filter((path): path is string => Boolean(path)))];
 }
 
-export async function tagSiteMorphElementUrn(Forma: PlacementClient, urn: string): Promise<Urn> {
+export async function tagSiteMorphElementUrn(
+  Forma: PlacementClient,
+  urn: string,
+  metadata: SiteMorphOwnershipMetadata = {},
+): Promise<Urn> {
   const tagged = await Forma.elements.editProperties({
     urn: urn as Urn,
     propertiesJsonMergePatch: {
       [SITEMORPH_OWNERSHIP_NAMESPACE]: {
         owned: true,
-        schemaVersion: 1,
+        schemaVersion: metadata.schemaVersion ?? 1,
+        ...(metadata.runId ? { runId: metadata.runId } : {}),
+        ...(metadata.role ? { role: metadata.role } : {}),
+        ...(metadata.itemId ? { itemId: metadata.itemId } : {}),
       },
     },
   });
