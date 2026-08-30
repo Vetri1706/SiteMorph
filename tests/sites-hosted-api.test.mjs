@@ -74,7 +74,9 @@ function hostedEnv(cache, overrides = {}) {
     FORTYGUARD_MAX_POLL_ATTEMPTS: "2",
     FORTYGUARD_POLL_INTERVAL_MS: "1",
     FORTYGUARD_CACHE_VERSION: "hosted-test-v1",
-    SITEMORPH_HOSTED_ACTIVITY_BUDGET: "12",
+    FORTYGUARD_MAX_NEW_ACTIVITIES: "15",
+    FORTYGUARD_INCLUDE_OPTIONAL_EVIDENCE: "true",
+    SITEMORPH_HOSTED_ACTIVITY_BUDGET: "15",
     ...overrides,
   };
 }
@@ -83,22 +85,29 @@ function installFortyGuardMock(options = {}) {
   const original = globalThis.fetch;
   let statusMode = options.statusMode ?? "completed";
   const submissions = [];
+  const optionalSubmissions = [];
+  const allSubmissions = [];
   const submissionKeys = [];
   const attemptedSubmissionKeys = [];
   const statusKeys = [];
   const activities = new Map();
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
-    if (url.pathname.endsWith("/heatmap") && init.method === "POST") {
+    const activityPath = ["/heatmap", "/env_params", "/satellite", "/streetview"]
+      .find((path) => url.pathname.endsWith(path));
+    if (activityPath && init.method === "POST") {
       const body = JSON.parse(String(init.body));
       const apiKey = new Headers(init.headers).get("api-key");
       attemptedSubmissionKeys.push(apiKey);
-      const intercepted = options.interceptSubmission?.({ apiKey, body });
+      const intercepted = options.interceptSubmission?.({ apiKey, body, path: activityPath });
       if (intercepted) return intercepted;
-      const activityId = `activity-${submissions.length + 1}`;
-      submissions.push(body);
+      const activityId = `activity-${allSubmissions.length + 1}`;
+      const submission = { path: activityPath, body, apiKey };
+      allSubmissions.push(submission);
+      if (activityPath === "/heatmap") submissions.push(body);
+      else optionalSubmissions.push(submission);
       submissionKeys.push(apiKey);
-      activities.set(activityId, { body, apiKey });
+      activities.set(activityId, { path: activityPath, body, apiKey });
       return Response.json({ data: { activity_id: activityId } });
     }
     if (url.pathname.includes("/status/")) {
@@ -112,6 +121,32 @@ function installFortyGuardMock(options = {}) {
       }
       if (statusMode === "network-error") throw new Error("simulated status connection reset");
       if (statusMode === "running") return Response.json({ data: { status: "running" } });
+      if (activity.path === "/satellite" && options.satelliteStatus === "failed") {
+        return Response.json({ data: { status: "failed" } });
+      }
+      if (activity.path === "/env_params") {
+        return Response.json({ data: { status: "completed", result: {
+          locations: [{ relative_humidity_percent: 24, heat_index_celsius: 39, ghi: 760 }],
+        } } });
+      }
+      if (activity.path === "/satellite") {
+        const imagery = options.satelliteImages === false ? {} : {
+          original_image: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB",
+          image_year: 2025,
+        };
+        return Response.json({ data: { status: "completed", result: {
+          ...imagery,
+          segmentation: {
+            ...(options.satelliteImages === false ? {} : { image_content: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAC" }),
+            segments: { tree: 10, vegetation: 8, grass: 4, building: 30, road: 20, pavement: 12 },
+          },
+        } } });
+      }
+      if (activity.path === "/streetview") {
+        return Response.json({ data: { status: "completed", result: {
+          front: { segments: { tree: 12, sky: 35, building: 28, road: 20, sidewalk: 5 } },
+        } } });
+      }
       const body = activity.body;
       const analytic = body.analytic_type;
       const value = analytic === "persistence" ? 18 : analytic === "exceedance" ? 19 : analytic === "time_of_measure" ? 6 : undefined;
@@ -138,6 +173,8 @@ function installFortyGuardMock(options = {}) {
   };
   return {
     submissions,
+    optionalSubmissions,
+    allSubmissions,
     submissionKeys,
     attemptedSubmissionKeys,
     statusKeys,
@@ -159,7 +196,7 @@ test("cache-only hosted misses never contact FortyGuard", async () => {
   }
 });
 
-test("one approved hosted AOI creates exactly 12 activities, persists, and exhausts the lifetime allowance", async () => {
+test("one approved hosted AOI creates exactly 15 full-evidence activities, persists imagery, and exhausts the lifetime allowance", async () => {
   const cache = new MemoryR2();
   const env = hostedEnv(cache);
   const mock = installFortyGuardMock();
@@ -171,17 +208,81 @@ test("one approved hosted AOI creates exactly 12 activities, persists, and exhau
     assert.equal(firstPayload.cache.persisted, true);
     assert.equal(firstPayload.climateDNA.designBrief.thermalZoningConfidence, "LOW");
     assert.equal(mock.submissions.length, 12);
+    assert.equal(mock.allSubmissions.length, 15);
+    assert.deepEqual(mock.optionalSubmissions.map((submission) => submission.path).sort(), ["/env_params", "/satellite", "/streetview"]);
     assert.deepEqual([...new Set(mock.submissions.map((body) => body.analytic_type))].sort(), ["exceedance", "persistence", "tcm", "time_of_measure"]);
+    assert.match(firstPayload.climateDNA.activityIds.satellite, /^activity-1[345]$/);
+    assert.equal(firstPayload.climateDNA.surface.originalImageDataUrl, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB");
+    assert.equal(firstPayload.climateDNA.surface.segmentedImageDataUrl, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAC");
 
     const restored = await worker.fetch(requestFor(polygon(), false), env);
     assert.equal(restored.status, 200);
     assert.equal((await restored.json()).cache.source, "memory");
-    assert.equal(mock.submissions.length, 12);
+    assert.equal(mock.allSubmissions.length, 15);
 
     const blocked = await worker.fetch(requestFor(polygon(-112.2), false), env);
     assert.equal(blocked.status, 429);
     assert.equal((await blocked.json()).code, "HOSTED_ACTIVITY_BUDGET_EXHAUSTED");
+    assert.equal(mock.allSubmissions.length, 15);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("a legacy 12-activity thermal result upgrades by only the three missing evidence activities", async () => {
+  const cache = new MemoryR2();
+  const coreEnv = hostedEnv(cache, {
+    FORTYGUARD_MAX_NEW_ACTIVITIES: "12",
+    FORTYGUARD_INCLUDE_OPTIONAL_EVIDENCE: "false",
+  });
+  const fullEnv = hostedEnv(cache);
+  const mock = installFortyGuardMock();
+  try {
+    const core = await worker.fetch(requestFor(polygon(-112.14), false), coreEnv);
+    assert.equal(core.status, 200, await core.clone().text());
     assert.equal(mock.submissions.length, 12);
+    assert.equal(mock.optionalSubmissions.length, 0);
+    assert.equal(mock.allSubmissions.length, 12);
+    assert.equal((await core.json()).climateDNA.surface, undefined);
+
+    const upgraded = await worker.fetch(requestFor(polygon(-112.14), false), fullEnv);
+    assert.equal(upgraded.status, 200, await upgraded.clone().text());
+    const upgradedPayload = await upgraded.json();
+    assert.equal(mock.submissions.length, 12, "saved heat activities must not be resubmitted");
+    assert.deepEqual(mock.optionalSubmissions.map((submission) => submission.path).sort(), ["/env_params", "/satellite", "/streetview"]);
+    assert.equal(mock.allSubmissions.length, 15);
+    assert.equal(upgradedPayload.climateDNA.surface.originalImageDataUrl, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB");
+    assert.equal(cache.jsonValuesContaining("hosted/quota")[0]?.used, 15);
+
+    const restored = await worker.fetch(requestFor(polygon(-112.14), true), fullEnv);
+    assert.equal(restored.status, 200, await restored.clone().text());
+    assert.equal(mock.allSubmissions.length, 15);
+
+    const otherSite = await worker.fetch(requestFor(polygon(-112.24), false), fullEnv);
+    assert.equal(otherSite.status, 429);
+    assert.equal(mock.allSubmissions.length, 15);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("a satellite activity without readable imagery is never accepted as complete or resubmitted", async () => {
+  const cache = new MemoryR2();
+  const env = hostedEnv(cache);
+  const mock = installFortyGuardMock({ satelliteImages: false });
+  try {
+    const first = await worker.fetch(requestFor(polygon(-112.145), false), env);
+    assert.equal(first.status, 502, await first.clone().text());
+    assert.equal((await first.json()).code, "SATELLITE_IMAGERY_UNAVAILABLE");
+    assert.equal(mock.submissions.length, 12);
+    assert.equal(mock.optionalSubmissions.length, 3);
+    assert.equal(mock.allSubmissions.length, 15);
+    assert.equal(cache.jsonValuesContaining("fortyguard/").length, 0, "no aggregate Climate DNA cache may be written");
+
+    const retry = await worker.fetch(requestFor(polygon(-112.145), true), env);
+    assert.equal(retry.status, 502, await retry.clone().text());
+    assert.equal((await retry.json()).code, "SATELLITE_IMAGERY_UNAVAILABLE");
+    assert.equal(mock.allSubmissions.length, 15, "saved activity results must be reused without a second provider request");
   } finally {
     mock.restore();
   }
@@ -205,11 +306,23 @@ test("pending saved activities are swept once per request and never resubmitted"
     assert.equal(mock.statusKeys.length, 24);
 
     mock.setStatusMode("completed");
-    const completed = await worker.fetch(requestFor(polygon(-112.15), true), env);
-    assert.equal(completed.status, 200, await completed.clone().text());
-    assert.equal((await completed.json()).cache.source, "live");
+    const coreCompleted = await worker.fetch(requestFor(polygon(-112.15), true), env);
+    assert.equal(coreCompleted.status, 404, await coreCompleted.clone().text());
+    assert.equal((await coreCompleted.json()).code, "SAVED_ANALYSIS_MISSING");
     assert.equal(mock.submissions.length, 12);
     assert.equal(mock.statusKeys.length, 36);
+
+    const approvedContinuation = await worker.fetch(requestFor(polygon(-112.15), false), env);
+    assert.equal(approvedContinuation.status, 200, await approvedContinuation.clone().text());
+    assert.equal((await approvedContinuation.json()).cache.source, "live");
+    assert.equal(mock.submissions.length, 12);
+    assert.equal(mock.optionalSubmissions.length, 3);
+    assert.equal(mock.allSubmissions.length, 15);
+    assert.equal(mock.statusKeys.length, 39);
+
+    const restored = await worker.fetch(requestFor(polygon(-112.15), true), env);
+    assert.equal(restored.status, 200, await restored.clone().text());
+    assert.equal(mock.allSubmissions.length, 15);
   } finally {
     mock.restore();
   }
@@ -251,6 +364,7 @@ test("valid MultiPolygon heatmap tiles are normalized without discarding provide
     assert.equal(response.status, 200, await response.clone().text());
     assert.equal((await response.json()).cache.source, "live");
     assert.equal(mock.submissions.length, 12);
+    assert.equal(mock.allSubmissions.length, 15);
   } finally {
     mock.restore();
   }
@@ -283,7 +397,7 @@ test("invalid hosted geometry is rejected before quota or provider traffic", asy
   }
 });
 
-test("two uncached AOIs racing for the final allowance cannot exceed 12 provider submissions", async () => {
+test("two uncached AOIs racing for the final allowance cannot exceed 15 provider submissions", async () => {
   const cache = new MemoryR2();
   const env = hostedEnv(cache);
   const mock = installFortyGuardMock();
@@ -293,7 +407,7 @@ test("two uncached AOIs racing for the final allowance cannot exceed 12 provider
       worker.fetch(requestFor(polygon(-112.4), false), env),
     ]);
     assert.deepEqual(responses.map((response) => response.status).sort(), [200, 429]);
-    assert.equal(mock.submissions.length, 12);
+    assert.equal(mock.allSubmissions.length, 15);
   } finally {
     mock.restore();
   }
@@ -331,17 +445,18 @@ test("a definitively exhausted primary key rolls over to the first fallback with
     const response = await worker.fetch(requestFor(polygon(-112.5), false), env);
     assert.equal(response.status, 200, await response.clone().text());
     assert.equal(mock.submissions.length, 12);
+    assert.equal(mock.allSubmissions.length, 15);
     assert.ok(mock.attemptedSubmissionKeys.includes("test-key-not-a-secret"));
     assert.deepEqual([...new Set(mock.submissionKeys)], ["fallback-one"]);
     assert.deepEqual([...new Set(mock.statusKeys)], ["fallback-one"]);
     assert.ok(!mock.attemptedSubmissionKeys.includes("fallback-two"));
     const activityRecords = cache.jsonValuesContaining("fortyguard-activities");
-    assert.equal(activityRecords.length, 12);
+    assert.equal(activityRecords.length, 15);
     assert.ok(activityRecords.every((entry) => entry.credentialSlot === 1));
 
     const blocked = await worker.fetch(requestFor(polygon(-112.6), false), env);
     assert.equal(blocked.status, 429);
-    assert.equal(mock.submissions.length, 12);
+    assert.equal(mock.allSubmissions.length, 15);
   } finally {
     mock.restore();
   }
@@ -360,6 +475,7 @@ test("definitive exhaustion advances through both ordered fallbacks and stops at
     const response = await worker.fetch(requestFor(polygon(-112.51), false), env);
     assert.equal(response.status, 200, await response.clone().text());
     assert.equal(mock.submissions.length, 12);
+    assert.equal(mock.allSubmissions.length, 15);
     assert.ok(mock.attemptedSubmissionKeys.includes("test-key-not-a-secret"));
     assert.ok(mock.attemptedSubmissionKeys.includes("ordered-fallback-one"));
     assert.deepEqual([...new Set(mock.submissionKeys)], ["ordered-fallback-two"]);

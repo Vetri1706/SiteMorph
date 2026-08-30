@@ -44,7 +44,7 @@ export function SiteTab() {
         ? "Select Another Site Limit"
       : firstRunReady
         ? appConfig.optionalFortyGuardEvidence
-          ? `Run Full First Analysis · max ${appConfig.firstRunActivityLimit}`
+          ? "Run First Analysis · satellite required"
           : "Run First Thermal Analysis · max 12"
         : initialAnalysisEnabled
           ? "Check Saved Climate DNA"
@@ -55,7 +55,7 @@ export function SiteTab() {
       ? "Provider returned 0 cells · saved activity IDs retained · retry disabled"
     : firstRunReady
     ? appConfig.optionalFortyGuardEvidence
-      ? "Explicit approval required · thermal + environment + satellite + street context · then cache-only"
+      ? "Explicit approval required · thermal + required satellite imagery + environment + street context · then cache-only"
       : "Explicit approval required · core thermal only · saved for automatic no-credit reuse"
     : initialAnalysisEnabled
       ? "Saved AOI is checked first · no new FortyGuard activity starts during this check"
@@ -107,7 +107,7 @@ export function SiteTab() {
           }
           if (firstRunReady) {
             const approved = window.confirm(appConfig.optionalFortyGuardEvidence
-              ? `Run the first full-evidence analysis for this Site Limit? This may create up to ${appConfig.firstRunActivityLimit} FortyGuard activities: 12 hot-season thermal activities plus environmental, satellite, and street-edge context. The completed canonical result will be reused without new activities.`
+              ? `Run the first full-evidence analysis for this Site Limit? This may create up to ${appConfig.firstRunActivityLimit} FortyGuard activities: 12 hot-season thermal activities, required visible satellite context, environmental parameters, and street-edge context. The completed canonical result, including its imagery, will be reused without new activities.`
               : "Run the first hosted thermal analysis for this Site Limit? This may create up to 12 FortyGuard activities. Optional imagery remains deferred, and the completed result will be reused without new activities.");
             if (approved) void analyzeSite(false);
             return;

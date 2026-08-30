@@ -1,4 +1,5 @@
 import { createSiteAnalyzeMiddleware } from "../server/fortyguard.ts";
+import { FULL_EVIDENCE_ACTIVITY_COUNT } from "../server/full-evidence-policy.ts";
 import { bindGuardedFetch } from "./shims/fetch.ts";
 import { bindRuntimeBucket, type RuntimeBucket } from "./shims/runtime-store.ts";
 
@@ -12,6 +13,8 @@ type HostedEnv = {
   FORTYGUARD_GRANULARITY?: string;
   FORTYGUARD_POLL_INTERVAL_MS?: string;
   FORTYGUARD_MAX_POLL_ATTEMPTS?: string;
+  FORTYGUARD_MAX_NEW_ACTIVITIES?: string;
+  FORTYGUARD_INCLUDE_OPTIONAL_EVIDENCE?: string;
   FORTYGUARD_CACHE_VERSION?: string;
   SITEMORPH_HOSTED_ACTIVITY_BUDGET?: string;
   SITEMORPH_ALLOWED_ORIGINS?: string;
@@ -30,7 +33,7 @@ type AnalyzeBody = {
 type Middleware = (request: unknown, response: unknown, next: () => void) => Promise<void>;
 
 const DEFAULT_DATES = ["2023-07-15", "2024-07-15", "2025-07-15"];
-const HOSTED_RUN_ACTIVITY_LIMIT = 12;
+const HOSTED_RUN_ACTIVITY_LIMIT = FULL_EVIDENCE_ACTIVITY_COUNT;
 const MAX_BODY_BYTES = 100_000;
 const MAX_POLYGON_VERTICES = 250;
 const MAX_SITE_AREA_SQUARE_METERS = 25_000_000;
@@ -109,6 +112,15 @@ function runtimeConfig(env: HostedEnv) {
     .split(",")
     .map((key) => key.trim())
     .filter(Boolean);
+  const includeOptionalEvidence = env.FORTYGUARD_INCLUDE_OPTIONAL_EVIDENCE !== "false";
+  const configuredMaxNewActivities = Number(env.FORTYGUARD_MAX_NEW_ACTIVITIES);
+  const maxNewActivities = Math.max(
+    0,
+    Math.min(
+      HOSTED_RUN_ACTIVITY_LIMIT,
+      Number.isFinite(configuredMaxNewActivities) ? Math.floor(configuredMaxNewActivities) : HOSTED_RUN_ACTIVITY_LIMIT,
+    ),
+  );
   return {
     apiKey: env.FORTYGUARD_API_KEY,
     fallbackApiKeys,
@@ -117,8 +129,8 @@ function runtimeConfig(env: HostedEnv) {
     granularity,
     pollIntervalMs: pollInterval,
     maxPollAttempts: pollAttempts,
-    maxNewActivities: HOSTED_RUN_ACTIVITY_LIMIT,
-    includeOptionalEvidence: false,
+    maxNewActivities,
+    includeOptionalEvidence,
     cacheVersion: env.FORTYGUARD_CACHE_VERSION || "hosted-v1",
   };
 }
@@ -133,6 +145,8 @@ function getMiddleware(env: HostedEnv): Middleware {
     granularity: config.granularity,
     pollIntervalMs: config.pollIntervalMs,
     maxPollAttempts: config.maxPollAttempts,
+    maxNewActivities: config.maxNewActivities,
+    includeOptionalEvidence: config.includeOptionalEvidence,
     cacheVersion: config.cacheVersion,
   });
   const credentialsChanged = !middlewareConfig
@@ -270,6 +284,10 @@ async function analysisIdentity(body: AnalyzeBody, env: HostedEnv): Promise<stri
     dates: configuredDates(env),
     granularity: [60, 80, 100].includes(Number(env.FORTYGUARD_GRANULARITY)) ? Number(env.FORTYGUARD_GRANULARITY) : 60,
     thresholdCelsius: 35,
+    // Keep the hosted reservation identity stable across the 12 -> 15
+    // full-evidence upgrade. The aggregate cache itself independently keys the
+    // optional-evidence flag, while this identity protects the single lifetime
+    // allowance and lets the same AOI top up only its three missing activities.
     includeOptionalEvidence: false,
   }));
 }
@@ -315,20 +333,35 @@ async function releaseAnalysisLock(bucket: RuntimeBucket, lock: { key: string; t
   await conditionalPut(bucket, lock.key, { token: lock.token, expiresAt: 0 }, { etagMatches: existing.etag });
 }
 
-async function reserveHostedBudget(bucket: RuntimeBucket, analysisId: string, env: HostedEnv): Promise<boolean> {
+async function reserveHostedBudget(
+  bucket: RuntimeBucket,
+  analysisId: string,
+  env: HostedEnv,
+  requiredActivities: number,
+): Promise<boolean> {
   const reservationKey = `hosted/reservations/${analysisId}.json`;
-  if (await bucket.get(reservationKey)) return true;
+  const reservation = await readObjectJson(bucket, reservationKey);
+  const alreadyReserved = Math.max(0, Number(reservation?.value.activities ?? 0));
   const configured = Number(env.SITEMORPH_HOSTED_ACTIVITY_BUDGET);
   const limit = Math.max(0, Math.min(HOSTED_RUN_ACTIVITY_LIMIT, Number.isFinite(configured) ? Math.floor(configured) : HOSTED_RUN_ACTIVITY_LIMIT));
+  const additionalActivities = Math.max(0, Math.min(
+    Math.floor(requiredActivities),
+    limit - alreadyReserved,
+  ));
+  if (additionalActivities === 0) return alreadyReserved > 0 || requiredActivities === 0;
   const counterKey = "hosted/quota/lifetime-v1.json";
   for (let attempt = 0; attempt < 6; attempt += 1) {
     const existing = await readObjectJson(bucket, counterKey);
     const used = Number(existing?.value.used ?? 0);
-    if (used + HOSTED_RUN_ACTIVITY_LIMIT > limit) return false;
-    const next = { used: used + HOSTED_RUN_ACTIVITY_LIMIT, limit, updatedAt: new Date().toISOString() };
+    if (used + additionalActivities > limit) return false;
+    const next = { used: used + additionalActivities, limit, updatedAt: new Date().toISOString() };
     const condition = existing?.etag ? { etagMatches: existing.etag } : { etagDoesNotMatch: "*" };
     if (await conditionalPut(bucket, counterKey, next, condition)) {
-      await bucket.put(reservationKey, JSON.stringify({ activities: HOSTED_RUN_ACTIVITY_LIMIT, reservedAt: new Date().toISOString() }));
+      await bucket.put(reservationKey, JSON.stringify({
+        activities: alreadyReserved + additionalActivities,
+        reservedAt: reservation?.value.reservedAt ?? new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }));
       return true;
     }
   }
@@ -346,6 +379,7 @@ function allowedOrigins(request: Request, env: HostedEnv): Set<string> {
 
 function errorCode(status: number, message: string, backendCode?: string): string {
   if (backendCode === "NO_THERMAL_COVERAGE" || message.includes("returned no thermal cells")) return "NO_THERMAL_COVERAGE";
+  if (backendCode === "SATELLITE_IMAGERY_UNAVAILABLE") return "SATELLITE_IMAGERY_UNAVAILABLE";
   if (status === 404 && message.includes("No complete saved analysis")) return "SAVED_ANALYSIS_MISSING";
   if (status === 504 || message.includes("still processing") || message.includes("still running")) return "JOB_PENDING";
   if (status === 409) return "ACTIVITY_LIMIT";
@@ -365,17 +399,23 @@ async function normalizedBackendResponse(response: Response, origin?: string): P
     }
     return new Response(response.body, { status: response.status, headers });
   }
-  const payload = await response.json().catch(() => ({})) as { code?: string; error?: string };
+  const payload = await response.json().catch(() => ({})) as { code?: string; error?: string; requiredNewActivities?: number };
   const raw = payload.error ?? "Site analysis failed";
   const code = errorCode(response.status, raw, payload.code);
   const safeMessage = code === "FORTYGUARD_UPSTREAM_ERROR"
     ? "FortyGuard could not complete this analysis. No automatic resubmission will occur."
+    : code === "SATELLITE_IMAGERY_UNAVAILABLE"
+      ? "FortyGuard did not return readable satellite imagery. SiteMorph preserved the activity result but refused to save a context-free Climate DNA analysis."
     : code === "JOB_PENDING"
       ? "The SiteMorph request has stopped. FortyGuard is still processing saved activities; check again later without starting new ones."
       : code === "NO_THERMAL_COVERAGE"
         ? "FortyGuard returned no thermal cells for this Site Limit. SiteMorph preserved the saved activity IDs, skipped dependent metrics, and will not resubmit them. Select another Site Limit or treat this as a provider coverage gap."
       : raw.replaceAll(/\s*\([A-Za-z0-9_-]{12,}\)/g, "");
-  return json(response.status, { code, error: safeMessage }, origin);
+  return json(response.status, {
+    code,
+    ...(Number.isFinite(payload.requiredNewActivities) ? { requiredNewActivities: payload.requiredNewActivities } : {}),
+    error: safeMessage,
+  }, origin);
 }
 
 async function handleAnalyze(request: Request, env: HostedEnv, origin: string): Promise<Response> {
@@ -392,7 +432,7 @@ async function handleAnalyze(request: Request, env: HostedEnv, origin: string): 
   const cacheBody = JSON.stringify({ ...body, cacheOnly: true });
   const cached = await invokeBackend(backendRequest, env, cacheBody);
   if (cached.ok || body.cacheOnly) return normalizedBackendResponse(cached, origin);
-  const cachedPayload = await cached.clone().json().catch(() => ({})) as { error?: string };
+  const cachedPayload = await cached.clone().json().catch(() => ({})) as { error?: string; requiredNewActivities?: number };
   if (cached.status !== 404 || !cachedPayload.error?.includes("No complete saved analysis")) {
     return normalizedBackendResponse(cached, origin);
   }
@@ -408,10 +448,14 @@ async function handleAnalyze(request: Request, env: HostedEnv, origin: string): 
   try {
     const recheck = await invokeBackend(backendRequest, env, cacheBody);
     if (recheck.ok) return normalizedBackendResponse(recheck, origin);
-    if (!await reserveHostedBudget(env.CACHE, analysisId, env)) {
+    const recheckPayload = await recheck.clone().json().catch(() => ({})) as { requiredNewActivities?: number };
+    const requiredActivities = Number.isFinite(recheckPayload.requiredNewActivities)
+      ? Math.max(0, Math.floor(recheckPayload.requiredNewActivities!))
+      : HOSTED_RUN_ACTIVITY_LIMIT;
+    if (!await reserveHostedBudget(env.CACHE, analysisId, env, requiredActivities)) {
       return json(429, {
         code: "HOSTED_ACTIVITY_BUDGET_EXHAUSTED",
-        error: "The hosted prototype's 12-activity first-run budget has been used. Saved Climate DNA remains available without new FortyGuard requests.",
+        error: "The hosted prototype's 15-activity full-evidence allowance has been used. Saved Climate DNA remains available without new FortyGuard requests.",
       }, origin);
     }
     const paidBody = JSON.stringify({ ...body, cacheOnly: false });

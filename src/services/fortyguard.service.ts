@@ -1,6 +1,7 @@
 import climateMock from "../mocks/climate-dna.json";
 import type { ClimateDNA, FortyGuardUsage, SiteAnalysisResponse, SiteGeometry } from "../types";
 import { appConfig, delay } from "../utils/config";
+import { hasVisibleSatelliteContext } from "../utils/satellite-context";
 
 export interface FortyGuardServiceContract {
   analyzeSite(geometry: SiteGeometry, thresholdCelsius: number, siteTimezone?: string, cacheOnly?: boolean): Promise<SiteAnalysisResponse>;
@@ -132,6 +133,16 @@ class FortyGuardService implements FortyGuardServiceContract {
       throw await responseError(response, response.status === 422 ? "Site Outside Supported Coverage" : "FortyGuard site analysis failed");
     }
     const result = (await response.json()) as SiteAnalysisResponse;
+    if (appConfig.requiredSatelliteContext && !hasVisibleSatelliteContext(result.climateDNA.surface)) {
+      const message = cacheOnly
+        ? "No complete saved analysis with visible satellite context exists yet. No FortyGuard request was started."
+        : "FortyGuard did not return renderable satellite context for this Site Limit. SiteMorph stopped before presenting incomplete Climate DNA.";
+      throw new FortyGuardServiceError(
+        message,
+        cacheOnly ? "SAVED_ANALYSIS_MISSING" : "SATELLITE_CONTEXT_MISSING",
+        cacheOnly ? 404 : 502,
+      );
+    }
     console.info("[SiteMorph analysis] request completed", { cacheOnly, durationMs: Math.round(performance.now() - startedAt), source: result.cache?.source ?? "unknown" });
     return result;
   }

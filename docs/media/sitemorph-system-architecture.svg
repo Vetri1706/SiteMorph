@@ -133,28 +133,28 @@
     <text x="0" y="141" class="card-subtitle">Local Vite middleware · Worker / Vercel Function adapters</text>
     <text x="0" y="202" class="bullet-strong">• Canonical identity</text>
     <text x="28" y="241" class="bullet">AOI + dates + threshold + granularity</text>
-    <text x="28" y="278" class="bullet">timezone + optional evidence + schema</text>
+    <text x="28" y="278" class="bullet">timezone + full-evidence mode + schema</text>
     <text x="0" y="329" class="bullet-strong">• Memory → aggregate → activity cache</text>
     <text x="0" y="380" class="bullet-strong">• Persist IDs immediately; resume polling</text>
     <text x="0" y="431" class="bullet-strong">• In-flight dedupe · lock · quota reserve</text>
     <rect x="0" y="466" width="820" height="121" rx="20" fill="#07252c" stroke="#19b7b0" stroke-opacity=".8"/>
     <text x="24" y="503" class="mono">CACHE HIT → 0 new activities</text>
     <text x="24" y="540" class="route">local FS · R2 or private Vercel Blob + ETag CAS</text>
-    <text x="24" y="575" class="route">local max 15 · hosted lifetime max 12 core</text>
+    <text x="24" y="575" class="route">first uncached max 15 · same-AOI rerun = 0</text>
   </g>
 
   <!-- Card 4 -->
   <g transform="translate(2900 344)">
     <circle cx="34" cy="24" r="28" fill="#0c4548" stroke="#19b7b0" stroke-width="3"/><text x="34" y="33" text-anchor="middle" class="chip">4</text>
     <text x="82" y="32" class="step">FORTYGUARD API</text>
-    <text x="0" y="98" class="card-title">Historical thermal context</text>
+    <text x="0" y="98" class="card-title">Historical thermal + visual context</text>
     <text x="0" y="141" class="card-subtitle">Coarse evidence · 60 m default</text>
     <text x="0" y="199" class="bullet-strong">Core · 12 activities</text>
     <text x="0" y="237" class="mono">POST /v1/heatmap</text>
     <text x="28" y="274" class="bullet">3 July dates × 4 analytics</text>
     <text x="28" y="311" class="route">tcm · persistence · exceedance · time_of_measure</text>
-    <text x="0" y="362" class="bullet-strong">Optional local enrichment · +3</text>
-    <text x="0" y="400" class="mono">/v1/env_params · /v1/satellite · /v1/streetview</text>
+    <text x="0" y="362" class="bullet-strong">Required first-run context · +3</text>
+    <text x="0" y="400" class="mono">POST /v1/env_params · /v1/satellite · /v1/streetview</text>
     <text x="0" y="451" class="bullet-strong">Persisted status and balance</text>
     <text x="0" y="489" class="mono">GET /v1/status/:activityId</text>
     <text x="0" y="526" class="mono">POST /v1/system/fetch-api-key-usage</text>
@@ -249,7 +249,7 @@
     <g transform="translate(0 97)">
       <text x="0" y="0" class="req-id">FR-01</text><text x="100" y="0" class="req">Select and validate a real Forma Site Limit AOI.</text>
       <text x="0" y="50" class="req-id">FR-02</text><text x="100" y="50" class="req">Restore aggregate/activity cache before any paid submission.</text>
-      <text x="0" y="100" class="req-id">FR-03</text><text x="100" y="100" class="req">Build provenance-rich, multi-date historical Climate DNA.</text>
+      <text x="0" y="100" class="req-id">FR-03</text><text x="100" y="100" class="req">Build Climate DNA with required first-run satellite context.</text>
       <text x="0" y="150" class="req-id">FR-04</text><text x="100" y="150" class="req">Render the complete AOI without invented spatial resolution.</text>
       <text x="0" y="200" class="req-id">FR-05</text><text x="100" y="200" class="req">Produce deterministic briefs and visible planning assumptions.</text>
       <text x="0" y="250" class="req-id">FR-06</text><text x="100" y="250" class="req">Create terrain-aligned native building / selected subdivision.</text>
@@ -268,9 +268,9 @@
     <g transform="translate(0 97)">
       <text x="0" y="0" class="req-id">NFR-01</text><text x="130" y="0" class="req">Deterministic and auditable; no runtime LLM.</text>
       <text x="0" y="50" class="req-id">NFR-02</text><text x="130" y="50" class="req">Server-only keys, same-origin validation, strict failover.</text>
-      <text x="0" y="100" class="req-id">NFR-03</text><text x="130" y="100" class="req">Credit ceilings; canonical same-AOI reruns create zero.</text>
+      <text x="0" y="100" class="req-id">NFR-03</text><text x="130" y="100" class="req">First uncached max 15; same-AOI reruns create zero.</text>
       <text x="0" y="150" class="req-id">NFR-04</text><text x="130" y="150" class="req">Durable IDs, cache recovery, in-flight request dedupe.</text>
-      <text x="0" y="200" class="req-id">NFR-05</text><text x="130" y="200" class="req">Fail closed on malformed, missing or implausible evidence.</text>
+      <text x="0" y="200" class="req-id">NFR-05</text><text x="130" y="200" class="req">Fail closed when required satellite imagery is missing.</text>
       <text x="0" y="250" class="req-id">NFR-06</text><text x="130" y="250" class="req">Bounded polling, retries, concurrency and geometry size.</text>
       <text x="900" y="0" class="req-id">NFR-07</text><text x="1030" y="0" class="req">Terrain-correct placement, verification and rollback.</text>
       <text x="900" y="50" class="req-id">NFR-08</text><text x="1030" y="50" class="req">Honest partial/unavailable/no-coverage degradation.</text>

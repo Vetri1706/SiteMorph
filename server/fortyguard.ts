@@ -4,7 +4,7 @@ import { setTimeout as wait } from "node:timers/promises";
 import type { Feature, FeatureCollection, Polygon } from "geojson";
 import type { ClimateDNA, FortyGuardUsage, RiskLevel, SiteAnalysisResponse } from "../src/types/index.ts";
 import { activityCacheKey, analysisCacheKey } from "./cache-key.ts";
-import { classifyOptionalEvidenceFailure, requiredNewActivityCount } from "./full-evidence-policy.ts";
+import { OPTIONAL_EVIDENCE_ACTIVITY_COUNT, classifyOptionalEvidenceFailure, requiredNewActivityCount } from "./full-evidence-policy.ts";
 import { mkdir, readFile, rename, writeFile } from "./persistence.ts";
 import { rankThermalTiles } from "./ranking.ts";
 
@@ -78,11 +78,13 @@ interface OptionalEvidenceResult {
 class HttpError extends Error {
   status: number;
   code?: string;
+  details?: Record<string, unknown>;
 
-  constructor(status: number, message: string, code?: string) {
+  constructor(status: number, message: string, code?: string, details?: Record<string, unknown>) {
     super(message);
     this.status = status;
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -188,9 +190,10 @@ function percentageMetric(value: unknown, candidateKeys: string[]): number {
 function imageDataUrl(value: unknown): string | undefined {
   const candidate = Array.isArray(value) ? value.find((item) => typeof item === "string" && item.length > 0) : value;
   if (typeof candidate !== "string" || !candidate.trim()) return undefined;
-  if (candidate.startsWith("data:image/")) return candidate;
-  const mimeType = candidate.startsWith("/9j/") ? "image/jpeg" : "image/png";
-  return `data:${mimeType};base64,${candidate}`;
+  const trimmed = candidate.trim();
+  if (trimmed.startsWith("data:image/") || trimmed.startsWith("https://")) return trimmed;
+  const mimeType = trimmed.startsWith("/9j/") ? "image/jpeg" : "image/png";
+  return `data:${mimeType};base64,${trimmed}`;
 }
 
 function featureNumbers(result: FortyGuardResult, candidateKeys: string[]): number[] {
@@ -826,6 +829,15 @@ function applyEnvironmentalEvidence(climateDNA: ClimateDNA, evidence: OptionalEv
 function applySatelliteEvidence(climateDNA: ClimateDNA, evidence: OptionalEvidenceResult): void {
   const segmentation = findDeepValue(evidence.result, ["segmentation"]);
   const segments = findDeepValue(segmentation, ["segments"]) ?? segmentation ?? {};
+  const originalImageDataUrl = imageDataUrl(findDeepValue(evidence.result, ["orignal_image", "original_image"]));
+  const segmentedImageDataUrl = imageDataUrl(findDeepValue(segmentation, ["image_content", "segmented_image"]));
+  if (!originalImageDataUrl && !segmentedImageDataUrl) {
+    throw new HttpError(
+      502,
+      "FortyGuard satellite context completed without readable source or segmented imagery. SiteMorph will not accept a context-free Climate DNA result.",
+      "SATELLITE_IMAGERY_UNAVAILABLE",
+    );
+  }
   const treePercent = percentageMetric(segments, ["tree", "trees", "tree_percent", "tree_percentage"]);
   const vegetationPercent = percentageMetric(segments, ["vegetation", "vegetation_percent", "vegetation_percentage"]);
   const grassPercent = percentageMetric(segments, ["grass", "grass_percent", "grass_percentage"]);
@@ -845,8 +857,8 @@ function applySatelliteEvidence(climateDNA: ClimateDNA, evidence: OptionalEviden
     otherPercent,
     canopyVegetationPercent: Number(Math.min(100, treePercent + vegetationPercent + grassPercent).toFixed(1)),
     imperviousPercent: Number(Math.min(100, buildingPercent + roadPercent + pavementPercent).toFixed(1)),
-    originalImageDataUrl: imageDataUrl(findDeepValue(evidence.result, ["orignal_image", "original_image"])),
-    segmentedImageDataUrl: imageDataUrl(findDeepValue(segmentation, ["image_content", "segmented_image"])),
+    originalImageDataUrl,
+    segmentedImageDataUrl,
     imageYear: Math.round(metricNumber(evidence.result, ["image_year"]) ?? 0) || undefined,
   };
   climateDNA.profile.vegetation = climateDNA.surface.canopyVegetationPercent < 15 ? "LOW" : climateDNA.surface.canopyVegetationPercent < 30 ? "MODERATE" : "HIGH";
@@ -954,7 +966,14 @@ async function analyzeSite(body: AnalyzeBody, config: FortyGuardConfig): Promise
     const message = body.cacheOnly
       ? `No complete saved analysis exists yet. ${requiredNewActivities} activities have not been submitted; no FortyGuard request was started.`
       : `Credit Saver blocked this run before submission: ${requiredNewActivities} new FortyGuard activities are required, above the configured limit of ${activityLimit}.`;
-    throw new HttpError(body.cacheOnly ? 404 : 409, message);
+    const requiredForCompleteAnalysis = missingHeatActivities
+      + (config.includeOptionalEvidence ? OPTIONAL_EVIDENCE_ACTIVITY_COUNT : 0);
+    throw new HttpError(
+      body.cacheOnly ? 404 : 409,
+      message,
+      body.cacheOnly ? "SAVED_ANALYSIS_MISSING" : "ACTIVITY_LIMIT",
+      { requiredNewActivities: requiredForCompleteAnalysis },
+    );
   }
   const budget = new ActivityBudget(activityLimit);
   const analyticTypes: AnalyticType[] = ["tcm", "persistence", "exceedance", "time_of_measure"];
@@ -1055,11 +1074,18 @@ async function analyzeSite(body: AnalyzeBody, config: FortyGuardConfig): Promise
         404,
         `No complete saved analysis exists yet. ${missingOptionalCount} full-evidence activities have not been submitted; no FortyGuard request was started.`,
         "SAVED_ANALYSIS_MISSING",
+        { requiredNewActivities: missingOptionalCount },
       );
     }
     if (environmental.status === "fulfilled") {
       applyEnvironmentalEvidence(normalized.climateDNA, environmental.value);
       if (normalized.climateDNA.activityIds) normalized.climateDNA.activityIds.environmental = environmental.value.activityId;
+    }
+    if (satellite.status === "rejected") {
+      // Satellite imagery is not an optional embellishment in a full-evidence
+      // run. Persist the activity outcome, but never save a context-free
+      // Climate DNA aggregate as successful.
+      throw satellite.reason;
     }
     if (satellite.status === "fulfilled") {
       applySatelliteEvidence(normalized.climateDNA, satellite.value);
@@ -1329,7 +1355,8 @@ export function createSiteAnalyzeMiddleware(config: FortyGuardConfig) {
       const message = error instanceof Error ? error.message : "Site analysis failed";
       const code = error instanceof HttpError ? error.code : undefined;
       console.warn("[SiteMorph analysis] request ended with error", { requestId, cacheOnly, status, durationMs: Date.now() - startedAt, message });
-      sendJson(response, status, { ...(code ? { code } : {}), error: message });
+      const details = error instanceof HttpError ? error.details : undefined;
+      sendJson(response, status, { ...(code ? { code } : {}), ...(details ?? {}), error: message });
     }
   };
 }

@@ -93,7 +93,7 @@ const createAnalysisSteps = (pointCount?: number): AnalysisStep[] => [
     { id: "peak-time", label: "Peak thermal hour analysis", detail: "time_of_measure · UTC", status: "pending" },
     { id: "ranking", label: "Hot-season relative tile ranking", detail: "40% temperature · 35% mean persistence · 25% mean exceedance", status: "pending" },
     { id: "environment", label: "Environmental parameters", detail: appConfig.optionalFortyGuardEvidence ? "Humidity · wet bulb · apparent temperature · solar" : "Deferred by Credit Saver mode", status: appConfig.optionalFortyGuardEvidence ? "pending" : "skipped", optional: true },
-    { id: "satellite", label: "Satellite surface segmentation", detail: appConfig.optionalFortyGuardEvidence ? "Vegetation · pavement · roads · buildings" : "Deferred by Credit Saver mode", status: appConfig.optionalFortyGuardEvidence ? "pending" : "skipped", optional: true },
+    { id: "satellite", label: appConfig.requiredSatelliteContext ? "Required satellite context" : "Satellite surface segmentation", detail: appConfig.requiredSatelliteContext ? "Visible source or segmentation imagery · saved after first run" : appConfig.optionalFortyGuardEvidence ? "Vegetation · pavement · roads · buildings" : "Deferred by Credit Saver mode", status: appConfig.optionalFortyGuardEvidence ? "pending" : "skipped", optional: !appConfig.requiredSatelliteContext },
     { id: "street", label: "Street-edge context", detail: appConfig.optionalFortyGuardEvidence ? "North access edge · graceful fallback" : "Deferred by Credit Saver mode", status: appConfig.optionalFortyGuardEvidence ? "pending" : "skipped", optional: true },
   ] satisfies AnalysisStep[] : []),
   ...(appConfig.mockMode ? [
@@ -491,7 +491,7 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
         toast: appConfig.mockMode
           ? "Climate DNA ready · Persistent Heat overlay simulated"
           : result.cache?.source !== "live"
-            ? "Saved Climate DNA loaded · no FortyGuard credits used"
+            ? `Saved Climate DNA${appConfig.requiredSatelliteContext ? " with satellite context" : ""} loaded · no FortyGuard credits used`
             : result.cache?.persisted
               ? "Climate DNA ready · analysis saved for no-credit reuse"
               : "Climate DNA ready · disk cache unavailable, session cache only",
@@ -532,13 +532,19 @@ export const useSiteMorphStore = create<SiteMorphState>((set, get) => ({
         }
         if (savedResultMissing) {
           cancelSavedAnalysisPolling(true);
+          void formaOverlayService.clearLayers().catch(() => undefined);
           return {
+            activeTab: "site",
+            climateDNA: null,
+            rankedTiles: [],
+            activeLayer: null,
+            overlayVisible: false,
             analysisStatus: "idle",
             analysisCacheStatus: "missing",
             analysisSteps: settleRunningAnalysisSteps(state.analysisSteps, "pending"),
             analysisError: null,
             toast: appConfig.paidFortyGuardAnalysis
-              ? "No saved Climate DNA found · first thermal run requires explicit approval"
+              ? `No saved Climate DNA found · first analysis requires explicit approval${appConfig.requiredSatelliteContext ? " and includes required satellite context" : ""}`
               : "No saved Climate DNA matches this Site Limit · initial analysis is disabled",
           };
         }

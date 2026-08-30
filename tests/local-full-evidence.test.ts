@@ -89,7 +89,14 @@ test("a complete local first run creates 12 thermal plus 3 enrichment activities
         const result = activity.path === "/env_params"
           ? { locations: [{ relative_humidity_percent: 24, heat_index_celsius: 39, ghi: 760 }] }
           : activity.path === "/satellite"
-            ? { segmentation: { segments: { tree: 10, vegetation: 8, grass: 4, building: 30, road: 20, pavement: 12 } } }
+            ? {
+                original_image: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB",
+                image_year: 2025,
+                segmentation: {
+                  image_content: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAC",
+                  segments: { tree: 10, vegetation: 8, grass: 4, building: 30, road: 20, pavement: 12 },
+                },
+              }
             : { front: { segments: { tree: 12, sky: 35, building: 28, road: 20, sidewalk: 5 } } };
         return Response.json({ data: { status: "completed", result } });
       }
@@ -114,6 +121,20 @@ test("a complete local first run creates 12 thermal plus 3 enrichment activities
     assert.equal(submissions.filter((submission) => submission.path === "/heatmap").length, 12);
     assert.deepEqual(submissions.slice(12).map((submission) => submission.path).sort(), ["/env_params", "/satellite", "/streetview"]);
     assert.equal(submissions.length, 15);
+    const firstClimate = first.payload.climateDNA as {
+      activityIds?: { environmental?: string; satellite?: string; street?: string };
+      surface?: { originalImageDataUrl?: string; segmentedImageDataUrl?: string; imageYear?: number };
+    };
+    const optionalActivityIds = [
+      firstClimate.activityIds?.environmental,
+      firstClimate.activityIds?.satellite,
+      firstClimate.activityIds?.street,
+    ];
+    assert.ok(optionalActivityIds.every((activityId) => /^activity-1[345]$/.test(activityId ?? "")));
+    assert.equal(new Set(optionalActivityIds).size, 3);
+    assert.equal(firstClimate.surface?.originalImageDataUrl, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB");
+    assert.equal(firstClimate.surface?.segmentedImageDataUrl, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAC");
+    assert.equal(firstClimate.surface?.imageYear, 2025);
 
     const directPaidRerun = await invoke(middleware, false);
     assert.equal(directPaidRerun.status, 200);

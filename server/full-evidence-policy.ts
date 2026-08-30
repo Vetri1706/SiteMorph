@@ -1,4 +1,6 @@
+export const CORE_THERMAL_ACTIVITY_COUNT = 12;
 export const OPTIONAL_EVIDENCE_ACTIVITY_COUNT = 3;
+export const FULL_EVIDENCE_ACTIVITY_COUNT = CORE_THERMAL_ACTIVITY_COUNT + OPTIONAL_EVIDENCE_ACTIVITY_COUNT;
 
 export function requiredNewActivityCount(
   missingHeatActivities: number,

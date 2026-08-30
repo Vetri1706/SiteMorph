@@ -160,13 +160,14 @@ function DataCards() {
         <Provenance title="Solar burden" source={climate.provenance.solar} />
       </details>}
 
-      {surface && climate.provenance.surface && <details className="data-disclosure">
-        <summary><span><Satellite size={16} />Surface segmentation</span><ChevronDown size={15} /></summary>
+      {surface && climate.provenance.surface && <details className="data-disclosure" open>
+        <summary><span><Satellite size={16} />Satellite context and surface segmentation</span><ChevronDown size={15} /></summary>
+        <p className="helper-copy">Captured by FortyGuard for the first analysis and restored from the same saved evidence on later visits.</p>
         <div className="segmentation-grid">
           {[ ["Tree",surface.treePercent],["Vegetation",surface.vegetationPercent],["Grass",surface.grassPercent],["Building",surface.buildingPercent],["Road",surface.roadPercent],["Pavement",surface.pavementPercent],["Bare ground",surface.bareGroundPercent],["Other",surface.otherPercent] ].map(([label,value]) => <div key={label}><span>{label}</span><strong>{value}%</strong><i style={{ width: `${value}%` }} /></div>)}
         </div>
         <div className="derived-strip"><div><Trees size={15} /><span>Canopy / vegetation</span><strong>{surface.canopyVegetationPercent}%</strong></div><div><Blocks size={15} /><span>Impervious</span><strong>{surface.imperviousPercent}%</strong></div><SourceChip source="sitemorph">Derived</SourceChip></div>
-        {(surface.originalImageDataUrl || surface.segmentedImageDataUrl) && <div className="evidence-images">{surface.originalImageDataUrl && <figure><img src={surface.originalImageDataUrl} alt="FortyGuard satellite source" /><figcaption>Source imagery</figcaption></figure>}{surface.segmentedImageDataUrl && <figure><img src={surface.segmentedImageDataUrl} alt="FortyGuard satellite segmentation" /><figcaption>Surface segmentation</figcaption></figure>}</div>}
+        {(surface.originalImageDataUrl || surface.segmentedImageDataUrl) && <div className="evidence-images">{surface.originalImageDataUrl && <figure><img src={surface.originalImageDataUrl} alt="FortyGuard satellite source for the selected Site Limit" /><figcaption>FortyGuard satellite source · first-run site context{surface.imageYear ? ` · ${surface.imageYear}` : ""}</figcaption></figure>}{surface.segmentedImageDataUrl && <figure><img src={surface.segmentedImageDataUrl} alt="FortyGuard satellite surface segmentation for the selected Site Limit" /><figcaption>FortyGuard surface segmentation · saved with the same first run</figcaption></figure>}</div>}
         <Provenance title="Surface coverage" source={climate.provenance.surface} />
       </details>}
 

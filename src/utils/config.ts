@@ -1,6 +1,11 @@
 export const isInsideForma = typeof window !== "undefined" && window !== window.parent;
-const isHostedSite = typeof window !== "undefined" && window.location.hostname.endsWith(".chatgpt.site");
-const optionalFortyGuardEvidence = !isHostedSite && import.meta.env.VITE_FORTYGUARD_OPTIONAL_EVIDENCE === "true";
+const hostname = typeof window !== "undefined" ? window.location.hostname.toLowerCase() : "";
+const isChatGptHostedSite = hostname.endsWith(".chatgpt.site");
+const isVercelHostedSite = hostname === "sitemorph.vercel.app" || hostname.endsWith(".vercel.app");
+const isHostedSite = isChatGptHostedSite || isVercelHostedSite;
+const optionalFortyGuardEvidence = !isChatGptHostedSite
+  && (isVercelHostedSite || import.meta.env.VITE_FORTYGUARD_OPTIONAL_EVIDENCE === "true");
+const requiredSatelliteContext = !isChatGptHostedSite && optionalFortyGuardEvidence;
 
 export const appConfig = {
   // The Forma SDK requires an embedded host bridge. Standalone localhost is
@@ -8,7 +13,9 @@ export const appConfig = {
   mockMode: !isInsideForma,
   backendUrl: import.meta.env.VITE_SITEMORPH_BACKEND_URL ?? "/api",
   hostedSite: isHostedSite,
+  vercelHostedSite: isVercelHostedSite,
   optionalFortyGuardEvidence,
+  requiredSatelliteContext,
   firstRunActivityLimit: optionalFortyGuardEvidence ? 15 : 12,
   paidFortyGuardAnalysis: isHostedSite || import.meta.env.VITE_FORTYGUARD_PAID_ANALYSIS === "true",
 } as const;

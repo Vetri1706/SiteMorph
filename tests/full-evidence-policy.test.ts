@@ -3,12 +3,18 @@ import test from "node:test";
 
 import {
   classifyOptionalEvidenceFailure,
+  CORE_THERMAL_ACTIVITY_COUNT,
+  FULL_EVIDENCE_ACTIVITY_COUNT,
+  OPTIONAL_EVIDENCE_ACTIVITY_COUNT,
   requiredNewActivityCount,
 } from "../server/full-evidence-policy.ts";
 
 test("an approved full first run reserves three enrichment activities after the thermal set", () => {
-  assert.equal(requiredNewActivityCount(12, true, false), 15);
-  assert.equal(requiredNewActivityCount(12, false, false), 12);
+  assert.equal(CORE_THERMAL_ACTIVITY_COUNT, 12);
+  assert.equal(OPTIONAL_EVIDENCE_ACTIVITY_COUNT, 3);
+  assert.equal(FULL_EVIDENCE_ACTIVITY_COUNT, 15);
+  assert.equal(requiredNewActivityCount(CORE_THERMAL_ACTIVITY_COUNT, true, false), FULL_EVIDENCE_ACTIVITY_COUNT);
+  assert.equal(requiredNewActivityCount(CORE_THERMAL_ACTIVITY_COUNT, false, false), CORE_THERMAL_ACTIVITY_COUNT);
 });
 
 test("cache-only reruns never reserve or submit missing enrichment activities", () => {

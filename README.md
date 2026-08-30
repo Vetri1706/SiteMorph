@@ -36,8 +36,8 @@ Early site design often separates historical climate evidence from the geometry 
 ## Live workflow
 
 1. **Select a Site Limit in Forma.** SiteMorph reads the real element path, polygon, area, project projection, and terrain context.
-2. **Restore or analyze Climate DNA.** The backend checks the canonical AOI cache first. An explicitly approved local first run can request a maximum of 15 activities: 12 hot-season thermal activities plus environmental, satellite, and street-edge context. Every reopen or retry of that same canonical AOI reuses the completed result with zero new activities; a different uncached AOI requires a new explicit approval.
-3. **Inspect historical behavior.** Temperature, mean persistence, mean exceedance, peak thermal time, and relative tile evidence are shown with their source and resolution.
+2. **Restore or analyze Climate DNA.** The backend checks the canonical AOI cache first. An explicitly approved first uncached run, locally or on the guarded Vercel deployment, can request a maximum of 15 activities: 12 hot-season thermal activities plus environmental parameters, satellite source/segmentation, and street-edge context. Satellite imagery is required for that full-evidence run; a hard failure or unusable image payload is surfaced instead of being silently accepted.
+3. **Inspect historical and visual context.** Temperature, mean persistence, mean exceedance, peak thermal time, relative tile evidence, and the required first-run satellite context are shown with source and resolution. Every reopen or retry of the same canonical full-evidence AOI reuses the saved result with zero new activities; a different uncached AOI requires new explicit approval.
 4. **Choose a project brief or subdivision scenario.** The no-paid-API Site Fit Advisor ranks deterministic preliminary building uses, while Residential Subdivision mode accepts explicit lot, dwelling, road, open-land, parking, setback, and canopy assumptions.
 5. **Generate native Forma geometry.** The single-building path creates one terrain-aligned floor stack. The subdivision path previews three local strategies, then writes only the selected option as separate terrain-aligned native floor stacks.
 6. **Measure before recommending.** The single-building path can test one explainable revision with native Sun and, when available, Rapid Wind. A selected subdivision is validated once as a complete proposal with one Site-Limit Sun analysis.
@@ -131,7 +131,7 @@ SiteMorph does not call an intervention successful merely because an analysis fi
 ## Key capabilities
 
 - **Climate DNA:** multi-year hot-season evidence, explicit source labels, low-confidence handling, and clipped native-ground overlays.
-- **Credit-safe analysis:** cache-first requests, persisted activity IDs, resumable polling, ordered server-only fallback keys, and a hard activity ceiling.
+- **Credit-safe full evidence:** cache-first requests, a 15-activity first-run ceiling, persisted activity IDs, resumable polling, ordered server-only fallback keys, required satellite context, and zero-activity same-AOI reruns.
 - **Site Fit Advisor:** input-specific deterministic briefs with visible assumptions and missing-evidence warnings.
 - **FortyGuard-weighted subdivisions:** three deterministic strategies, exposed multiplicative heat-risk scoring, selected-only native dwelling delivery, refresh-safe concept roads/greens/3D trees, and zero additional paid activities for option generation.
 - **Typology-aware planning:** program zones, parking, access, sheltered arrival/loading/service edges, and unallocated landscape.
@@ -159,7 +159,7 @@ The diagram distinguishes implemented solid routes from conditional or user-driv
 | Embedded panel → local SiteMorph | `GET /api/fortyguard/usage` | Retrieves or restores a dated server-side credit snapshot; deliberately disabled on the public hosted worker |
 | SiteMorph → FortyGuard | `POST /v1/heatmap` | Creates one core activity for each date and analytic type: `tcm`, `persistence`, `exceedance`, or `time_of_measure` |
 | SiteMorph → FortyGuard | `GET /v1/status/:activityId` | Resumes and polls the exact persisted activity ID without resubmitting it |
-| SiteMorph → FortyGuard | `POST /v1/env_params`, `/v1/satellite`, `/v1/streetview` | Optional complete-local-run context; three additional activities when explicitly enabled |
+| SiteMorph → FortyGuard | `POST /v1/env_params`, `/v1/satellite`, `/v1/streetview` | Required full first-run context; three additional activities after explicit approval, with satellite imagery validated before completion |
 | SiteMorph → FortyGuard | `POST /v1/system/fetch-api-key-usage` | Server-only usage lookup; the browser never receives an API key |
 
 ### Functional and non-functional requirements
@@ -167,16 +167,16 @@ The diagram distinguishes implemented solid routes from conditional or user-driv
 | Type | Requirement | Implemented behavior |
 | --- | --- | --- |
 | Functional | Real Forma AOI | Accepts a selected Site Limit element path, validates its footprint and converts project coordinates into a closed WGS84 Polygon |
-| Functional | Historical Climate DNA | Restores or creates multi-date temperature, persistence, exceedance and peak-time evidence with source, activity-ID, timezone and resolution provenance |
+| Functional | Historical Climate DNA | Restores or creates multi-date temperature, persistence, exceedance and peak-time evidence plus required first-run satellite context, with source, activity-ID, timezone and resolution provenance |
 | Functional | Honest spatial display | Clips the ground texture to the complete Site Limit, extends only the nearest real edge value and never invents parcel-scale variation |
 | Functional | Deterministic design | Produces preliminary Site Fit briefs, a typology-aware single-building loop, or three auditable subdivision strategies with explicit assumptions and formulas |
 | Functional | Forma-native delivery | Creates terrain-aligned native floor stacks, materializes only the selected subdivision, verifies placement and persists preliminary concept context separately |
 | Functional | Measured decision | Runs native Site-Limit Sun and optional Rapid Wind, tests at most one explainable revision and retains it only when readable metrics support improvement |
 | Functional | Trace and handoff | Exports genuine DOCX and evidence sidecars, preflights the persisted proposal and guides the supported Forma → Revit add-in workflow |
 | Non-functional | Deterministic and auditable | Requires no runtime LLM; formulas, provenance, IDs, timestamps, decisions and limitations remain inspectable |
-| Non-functional | Secure and credit-safe | Keeps keys server-side, uses strict ordered failover, enforces activity ceilings and reuses the same canonical AOI with zero new activities |
+| Non-functional | Secure and credit-safe | Keeps keys server-side, uses strict ordered failover, caps the approved full first run at 15 and reuses the same canonical full-evidence AOI with zero new activities |
 | Non-functional | Durable and recoverable | Persists activity IDs immediately, resumes polling, coalesces in-flight requests and survives process restarts through local or hosted storage |
-| Non-functional | Fail-closed integrity | Rejects malformed geometry, empty thermal coverage, implausible Sun values, unreadable grids and displaced geometry instead of manufacturing a recommendation |
+| Non-functional | Fail-closed integrity | Rejects malformed geometry, empty thermal coverage, missing required first-run satellite imagery, implausible Sun values, unreadable grids and displaced geometry instead of manufacturing a recommendation |
 | Non-functional | Bounded operation | Caps polling, retries, concurrency, request size, terrain sampling and geometry work; hosted analysis also uses origin, lock and quota guards |
 | Non-functional | Host-native interoperability | Treats Forma as the geometry/analysis authority, keeps Revit transfer user-driven and never claims concept overlays or JSON are native BIM |
 
@@ -238,24 +238,24 @@ Start from `.env.example`. Never expose a FortyGuard key, Autodesk client secret
 | Variable | Scope | Purpose |
 | --- | --- | --- |
 | `VITE_SITEMORPH_BACKEND_URL` | Browser | Relative or trusted SiteMorph backend URL |
-| `VITE_FORTYGUARD_PAID_ANALYSIS` | Browser | Shows the explicitly confirmed uncached-analysis action locally; the server ceiling remains authoritative |
-| `VITE_FORTYGUARD_OPTIONAL_EVIDENCE` | Browser | Shows the local enrichment workflow only when the server is configured to supply it |
+| `VITE_FORTYGUARD_PAID_ANALYSIS` | Browser | Shows the explicitly confirmed first uncached-analysis action; the server ceiling remains authoritative |
+| `VITE_FORTYGUARD_OPTIONAL_EVIDENCE` | Browser | Shows the full-evidence 15-activity workflow; it must match the server-side evidence flag |
 | `FORTYGUARD_API_KEY` | Server only | Primary FortyGuard credential |
 | `FORTYGUARD_FALLBACK_API_KEYS` | Server only | Ordered fallback credentials used only after definitive invalid/exhausted responses |
 | `FORTYGUARD_API_URL` | Server only | FortyGuard API base URL; defaults to `https://api.fortyguard.com/v1` |
 | `FORTYGUARD_ANALYSIS_DATES` | Server only | Representative hot-season dates included in the canonical cache key |
 | `FORTYGUARD_GRANULARITY` | Server only | Requested historical evidence resolution |
-| `FORTYGUARD_MAX_NEW_ACTIVITIES` | Server only | Hard ceiling for newly submitted activities; Safe mode defaults to `0` |
-| `FORTYGUARD_INCLUDE_OPTIONAL_EVIDENCE` | Server only | Keeps enrichment disabled unless explicitly enabled |
+| `FORTYGUARD_MAX_NEW_ACTIVITIES` | Server only | Hard ceiling for newly submitted activities; `15` permits the approved 12-core + 3-context first run |
+| `FORTYGUARD_INCLUDE_OPTIONAL_EVIDENCE` | Server only | Enables environmental, required satellite, and street-edge activities as one full-evidence run |
 | `FORTYGUARD_MAX_POLL_ATTEMPTS` | Server only | Bounded number of saved activity-status checks for one request |
 | `FORTYGUARD_POLL_INTERVAL_MS` | Server only | Delay between provider status checks |
-| `FORTYGUARD_CACHE_VERSION` | Server only | Intentional cache-schema/refresh boundary |
-| `SITEMORPH_HOSTED_ACTIVITY_BUDGET` | Hosted server only | Persistent public lifetime activity ceiling; defaults to the guarded 12-core limit |
+| `FORTYGUARD_CACHE_VERSION` | Server only | Intentional incompatible cache-schema boundary; do not bump merely to enable full evidence |
+| `SITEMORPH_HOSTED_ACTIVITY_BUDGET` | Hosted server only | Persistent public lifetime ceiling of `15` for one guarded full-evidence AOI |
 | `BLOB_STORE_ID` | Vercel-managed server only | Private Vercel Blob store used for AOI results, activity IDs, locks and the lifetime quota; injected when the store is connected |
 
 Local aggregate responses are saved under `.sitemorph-cache/fortyguard/`, per-activity IDs and statuses under `.sitemorph-cache/fortyguard-activities/`, and the dated usage snapshot at `.sitemorph-cache/fortyguard-usage.json`. Equivalent polygon rotation or winding produces the same canonical AOI key. Ambiguous network failures never rotate credentials or silently resubmit paid work.
 
-For an explicitly approved complete local first run, set the server ceiling to `15`, enable both optional-evidence flags, and keep the three representative hot-season dates. The public hosted workflow intentionally remains capped at 12 core activities with enrichment disabled. Fallback keys stay server-side, retain their declared order, and are attempted only after a definitive exhausted-credit or invalid/revoked-credential response.
+For the explicitly approved complete first run, set the server ceiling and hosted lifetime budget to `15`, enable both full-evidence flags, enable the confirmation UI, and keep the three representative hot-season dates. The server submits at most 12 thermal plus environmental, satellite, and street-edge activities, then requires usable satellite imagery before declaring the full-evidence result complete. Every same-AOI reopen, retry, and refresh checks the saved aggregate/activity records and creates zero new activities. Keep the existing cache version when enabling this mode: the canonical identity already includes the evidence-mode field, allowing saved core activities to be reused while only missing context is submitted. Bump the cache version only for an intentional incompatible schema change. Fallback keys stay server-side, retain their declared order, and are attempted only after a definitive exhausted-credit or invalid/revoked-credential response.
 
 ## Verification
 
@@ -284,7 +284,7 @@ dist/.openai/hosting.json
 
 SiteMorph's production target is Vercel. `vercel.json` publishes `dist/client` as the Vite application and deploys `/api/site/analyze` plus the deliberately disabled public usage route as Node.js Functions. A connected private Vercel Blob store supplies durable object storage and ETag compare-and-set behavior for the AOI cache, saved activity IDs, in-flight locks and the one-time hosted quota reservation.
 
-Production credentials are scoped to Vercel Production only. `FORTYGUARD_API_KEY` and the ordered comma-separated `FORTYGUARD_FALLBACK_API_KEYS` remain encrypted server variables; preview deployments receive no FortyGuard credentials. The production browser build enables the explicit uncached-analysis confirmation while enrichment stays disabled, and `SITEMORPH_HOSTED_ACTIVITY_BUDGET=12` remains the authoritative lifetime ceiling.
+Production credentials are scoped to Vercel Production only. `FORTYGUARD_API_KEY` and the ordered comma-separated `FORTYGUARD_FALLBACK_API_KEYS` remain encrypted server variables; preview deployments receive no FortyGuard credentials. The production browser build enables explicit first-run confirmation and the full-evidence UI, while the server enables environmental, required satellite, and street-edge context. `SITEMORPH_HOSTED_ACTIVITY_BUDGET=15` remains the authoritative lifetime ceiling; the private Blob store makes every same-AOI rerun cache-only and zero-credit.
 
 `npm run build` also preserves the Sites-compatible package. Any additional host must provide all of the following:
 
@@ -307,6 +307,7 @@ The transferable artifacts are the native Forma mass/floor stack and, for a mate
 - Site Fit results are not zoning, entitlement, legal, financial, market, fire, parking-code, civil, or structural advice.
 - FortyGuard historical layers may be spatially uniform at 60 m resolution; SiteMorph reports low zoning confidence instead of inventing a preferred direction.
 - FortyGuard currently documents United States regional coverage. If completed saved activities return an empty polygon FeatureCollection, SiteMorph records a terminal no-coverage result, preserves the activity IDs, skips dependent metrics, and does not resubmit or invent Climate DNA.
+- A first uncached full-evidence run is not considered complete without usable FortyGuard satellite source/segmentation imagery. SiteMorph preserves submitted activity IDs and surfaces an attention state rather than silently falling back; saved matching imagery can be restored with zero new activities.
 - Forma may complete an analysis without exposing a readable ground grid. SiteMorph records native-result-only or partial status rather than fabricating metrics.
 - The Compare tab remains a precomputed demo workflow. Residential Subdivision mode separately generates three deterministic local previews and writes only the selected option; it does not imply three live Forma analyses.
 - The generated object is concept-stage mass/floor geometry, not detailed walls, roofs, openings, systems, or construction documentation.
